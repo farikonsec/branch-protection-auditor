@@ -1,167 +1,243 @@
 package main
 
 import (
-	"context"
-	"crypto/rsa"
-	"encoding/json"
-	"encoding/pem"
-	"fmt"
-	"log"
-	"os"
-	"time"
+    "context"
+    "crypto/rsa"
+    "encoding/pem"
+    "fmt"
+    "log"
+    "os"
+    "strings"
+    "time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/google/go-github/v53/github"
-	"golang.org/x/oauth2"
-	"io/ioutil"
-	"net/http"
+    "github.com/golang-jwt/jwt/v5"
+    "github.com/google/go-github/v53/github"
+    "golang.org/x/oauth2"
 )
-
-// Step 1: Read required values from environment variables
-var (
-	appID          = os.Getenv("APP_ID")
-	installationID = os.Getenv("INSTALLATION_ID")
-	privateKeyPem  = os.Getenv("PRIVATE_KEY")
-)
-
-// getJWTToken generates a signed JWT to authenticate the GitHub App
-func getJWTToken(appID string, key *rsa.PrivateKey) (string, error) {
-	now := time.Now()
-	claims := jwt.RegisteredClaims{
-		Issuer:    appID,
-		IssuedAt:  jwt.NewNumericDate(now),
-		ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute * 10)),
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	return token.SignedString(key)
-}
-
-// parsePrivateKey parses PEM-formatted private key text into rsa.PrivateKey
-func parsePrivateKey(pemEncoded string) (*rsa.PrivateKey, error) {
-	block, _ := pem.Decode([]byte(pemEncoded))
-	if block == nil {
-		return nil, fmt.Errorf("failed to parse PEM block")
-	}
-
-	key, err := jwt.ParseRSAPrivateKeyFromPEM([]byte(pemEncoded))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse RSA private key: %w", err)
-	}
-	return key, nil
-}
 
 func main() {
-	ctx := context.Background()
+    start := time.Now()
 
-	// Step 2: Convert private key string to a usable format
-	key, err := parsePrivateKey(privateKeyPem)
-	if err != nil {
-		log.Fatalf("❌ Error parsing private key: %v", err)
-	}
+    appID := os.Getenv("APP_ID")
+    installationID := os.Getenv("INSTALLATION_ID")
+    privateKeyPEM := os.Getenv("PRIVATE_KEY")
+    org := "nanasec"
 
-	// Step 3: Generate JWT for GitHub App authentication
-	jwtToken, err := getJWTToken(appID, key)
-	if err != nil {
-		log.Fatalf("❌ Error generating JWT: %v", err)
-	}
+    if appID == "" || installationID == "" || privateKeyPEM == "" {
+        log.Fatal("Missing APP_ID, INSTALLATION_ID, or PRIVATE_KEY environment variables")
+    }
 
-	// Step 4: Get installation access token using JWT
-	installationToken, err := getInstallationToken(ctx, jwtToken)
-	if err != nil {
-		log.Fatalf("❌ Error getting installation token: %v", err)
-	}
+    key, err := parsePrivateKey(privateKeyPEM)
+    if err != nil {
+        log.Fatalf("Failed to parse private key: %v", err)
+    }
 
-	// Step 5: Use installation token to auth GitHub API client
-	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: installationToken})
-	tc := oauth2.NewClient(ctx, ts)
-	client := github.NewClient(tc)
+    jwtToken, err := generateJWT(appID, key)
+    if err != nil {
+        log.Fatalf("Failed to generate JWT: %v", err)
+    }
 
-	// Step 6: List repositories in the org
-	opt := &github.RepositoryListByOrgOptions{
-		ListOptions: github.ListOptions{PerPage: 100},
-	}
-	org := "nanasec" // Replace with your GitHub org name
+    client := github.NewClient(nil).WithAuthToken(jwtToken)
 
-	fmt.Println("🔍 Repositories and branch protection status:")
-	for {
-		repos, resp, err := client.Repositories.ListByOrg(ctx, org, opt)
-		if err != nil {
-			log.Fatalf("❌ Error listing repositories: %v", err)
-		}
+    ctx := context.Background()
+    token, _, err := client.Apps.CreateInstallationToken(ctx, parseInt64(installationID), nil)
+    if err != nil {
+        log.Fatalf("Failed to create installation token: %v", err)
+    }
 
-		for _, repo := range repos {
-			fmt.Printf("\n📁 %s\n", repo.GetName())
-			protection, _, err := client.Repositories.GetBranchProtection(ctx, org, repo.GetName(), repo.GetDefaultBranch())
-			if err != nil {
-				fmt.Println("⚠️  No branch protection or insufficient permissions")
-				continue
-			}
-			printProtectionSummary(protection)
-		}
+    ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token.GetToken()})
+    tc := oauth2.NewClient(ctx, ts)
+    client = github.NewClient(tc)
 
-		if resp.NextPage == 0 {
-			break
-		}
-		opt.Page = resp.NextPage
-	}
+    repos, _, err := client.Repositories.ListByOrg(ctx, org, &github.RepositoryListByOrgOptions{Type: "all"})
+    if err != nil {
+        log.Fatalf("Failed to list repositories: %v", err)
+    }
+
+    total := 0
+    protected := 0
+    unprotected := 0
+
+    fmt.Println("🔍 Repositories and branch protection status:
+")
+
+    for _, repo := range repos {
+        fmt.Printf("📁 %s
+", repo.GetName())
+        total++
+
+        branch := repo.GetDefaultBranch()
+        p, _, err := client.Repositories.GetBranchProtection(ctx, org, repo.GetName(), branch)
+        if err != nil {
+            fmt.Println("Branch protection: not configured or insufficient permissions
+")
+            unprotected++
+            continue
+        }
+
+        printProtectionSummary(p)
+        fmt.Println()
+        protected++
+    }
+
+    elapsed := time.Since(start).Seconds()
+    fmt.Println("🔄 Summary")
+    fmt.Printf("Repositories scanned: %d
+", total)
+    fmt.Printf("Protected branches found: %d
+", protected)
+    fmt.Printf("Unprotected or inaccessible branches: %d
+", unprotected)
+    fmt.Printf("Total time taken: %.2f seconds
+", elapsed)
 }
 
-// getInstallationToken calls GitHub API to exchange JWT for installation token
-func getInstallationToken(ctx context.Context, jwt string) (string, error) {
-	url := fmt.Sprintf("https://api.github.com/app/installations/%s/access_tokens", installationID)
-	req, err := http.NewRequestWithContext(ctx, "POST", url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+jwt)
-	req.Header.Set("Accept", "application/vnd.github+json")
+func parsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
+    block, _ := pem.Decode([]byte(pemStr))
+    if block == nil {
+        return nil, fmt.Errorf("failed to decode PEM block")
+    }
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 201 {
-		body, _ := ioutil.ReadAll(resp.Body)
-		return "", fmt.Errorf("GitHub API error: %s", string(body))
-	}
-
-	var result struct {
-		Token string `json:"token"`
-	}
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	if err != nil {
-		return "", err
-	}
-
-	return result.Token, nil
+    return jwt.ParseRSAPrivateKeyFromPEM([]byte(pemStr))
 }
 
-// printProtectionSummary logs key protection settings for each repo
+func generateJWT(appID string, key *rsa.PrivateKey) (string, error) {
+    now := time.Now()
+    claims := jwt.RegisteredClaims{
+        IssuedAt:  jwt.NewNumericDate(now),
+        ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute * 10)),
+        Issuer:    appID,
+    }
+
+    token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+    return token.SignedString(key)
+}
+
+func parseInt64(s string) int64 {
+    var id int64
+    fmt.Sscanf(s, "%d", &id)
+    return id
+}
+
 func printProtectionSummary(p *github.Protection) {
-	fmt.Printf("🔐 Require PR reviews: %v\n", p.RequiredPullRequestReviews != nil)
+    if p == nil {
+        fmt.Println("Branch protection: not configured")
+        return
+    }
 
-	if p.EnforceAdmins != nil {
-		fmt.Printf("🔒 Enforce admins: %v\n", p.EnforceAdmins.Enabled)
-	} else {
-		fmt.Println("🔒 Enforce admins: Not configured")
-	}
+    if p.RequiredPullRequestReviews != nil {
+        r := p.RequiredPullRequestReviews
+        fmt.Printf("Require PR before merge: enabled
+")
+        fmt.Printf("Required number of approvals: %d
+", r.RequiredApprovingReviewCount)
+        fmt.Printf("Dismiss stale reviews: %s
+", boolToString(r.DismissStaleReviews))
+        fmt.Printf("Code owner reviews: %s
+", boolToString(r.RequireCodeOwnerReviews))
 
-	if p.RequiredStatusChecks != nil {
-		fmt.Printf("✅ Required status checks: %v\n", p.RequiredStatusChecks.Contexts)
-		fmt.Printf("🔁 Status checks must be up to date: %v\n", p.RequiredStatusChecks.Strict)
-	} else {
-		fmt.Println("✅ Required status checks: Not configured")
-	}
+        if r.DismissalRestrictions != nil {
+            users := extractLogins(r.DismissalRestrictions.Users)
+            teams := extractSlugs(r.DismissalRestrictions.Teams)
+            fmt.Printf("Restrict dismissals to users: %s
+", users)
+            fmt.Printf("Restrict dismissals to teams: %s
+", teams)
+        } else {
+            fmt.Println("Restrict dismissals to users: not configured")
+            fmt.Println("Restrict dismissals to teams: not configured")
+        }
 
-	if p.RequiredSignatures != nil {
-		fmt.Printf("🧱 Require signed commits: %v\n", *p.RequiredSignatures.Enabled)
-	} else {
-		fmt.Println("🧱 Require signed commits: Not configured")
-	}
+        if r.BypassPullRequestAllowances != nil {
+            users := extractLogins(r.BypassPullRequestAllowances.Users)
+            teams := extractSlugs(r.BypassPullRequestAllowances.Teams)
+            fmt.Printf("Bypass PR requirements for users: %s
+", users)
+            fmt.Printf("Bypass PR requirements for teams: %s
+", teams)
+        }
+    } else {
+        fmt.Printf("Require PR before merge: disabled
+")
+    }
 
-	// Linear history support is no longer directly available in this struct
-	fmt.Println("🔄 Linear history: Not available in this API version")
+    if p.RequiredStatusChecks != nil {
+        s := p.RequiredStatusChecks
+        fmt.Printf("Require status checks: enabled
+")
+        fmt.Printf("Status check strict mode: %s
+", boolToString(s.Strict))
+        if len(s.Contexts) > 0 {
+            fmt.Printf("Status check contexts: %v
+", s.Contexts)
+        } else {
+            fmt.Println("Status check contexts: none configured")
+        }
+    } else {
+        fmt.Println("Require status checks: disabled")
+    }
+
+    if p.EnforceAdmins != nil {
+        fmt.Printf("Enforce admins: %s
+", boolToString(p.EnforceAdmins.Enabled))
+    } else {
+        fmt.Println("Enforce admins: not configured")
+    }
+
+    if p.RequiredSignatures != nil && p.RequiredSignatures.Enabled != nil {
+        fmt.Printf("Require signed commits: %s
+", boolToString(*p.RequiredSignatures.Enabled))
+    } else {
+        fmt.Println("Require signed commits: not configured")
+    }
+
+    if p.RequiredConversationResolution != nil {
+        fmt.Printf("Require conversation resolution: %s
+", boolToString(p.RequiredConversationResolution.Enabled))
+    } else {
+        fmt.Println("Require conversation resolution: not configured")
+    }
+
+    if p.AllowForcePushes != nil {
+        fmt.Printf("Allow force pushes: %s
+", boolToString(p.AllowForcePushes.Enabled))
+    } else {
+        fmt.Println("Allow force pushes: not configured")
+    }
+
+    if p.AllowDeletions != nil {
+        fmt.Printf("Allow deletions: %s
+", boolToString(p.AllowDeletions.Enabled))
+    } else {
+        fmt.Println("Allow deletions: not configured")
+    }
+}
+
+func boolToString(b bool) string {
+    if b {
+        return "enabled"
+    }
+    return "disabled"
+}
+
+func extractLogins(users []*github.User) string {
+    if len(users) == 0 {
+        return "none"
+    }
+    var list []string
+    for _, u := range users {
+        list = append(list, u.GetLogin())
+    }
+    return strings.Join(list, ", ")
+}
+
+func extractSlugs(teams []*github.Team) string {
+    if len(teams) == 0 {
+        return "none"
+    }
+    var list []string
+    for _, t := range teams {
+        list = append(list, t.GetSlug())
+    }
+    return strings.Join(list, ", ")
 }
