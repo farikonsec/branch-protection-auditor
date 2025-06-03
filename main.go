@@ -37,9 +37,13 @@ func main() {
         log.Fatalf("Failed to generate JWT: %v", err)
     }
 
-    client := github.NewClient(nil).WithAuthToken(jwtToken)
-
     ctx := context.Background()
+    
+    // Create client with JWT token for app authentication
+    jwtTokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: jwtToken})
+    jwtClient := oauth2.NewClient(ctx, jwtTokenSource)
+    client := github.NewClient(jwtClient)
+
     token, _, err := client.Apps.CreateInstallationToken(ctx, parseInt64(installationID), nil)
     if err != nil {
         log.Fatalf("Failed to create installation token: %v", err)
