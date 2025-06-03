@@ -157,7 +157,7 @@ func printProtectionSummary(p *github.Protection) {
 	}
 
 	if p.RequiredSignatures != nil {
-		fmt.Printf("🧱 Require signed commits: %v\n", p.RequiredSignatures.Enabled)
+		fmt.Printf("🧱 Require signed commits: %v\n", *p.RequiredSignatures.Enabled)
 	} else {
 		fmt.Println("🧱 Require signed commits: Not configured")
 	}
