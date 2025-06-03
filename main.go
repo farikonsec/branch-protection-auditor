@@ -142,8 +142,23 @@ func getInstallationToken(ctx context.Context, jwt string) (string, error) {
 // printProtectionSummary logs key protection settings for each repo
 func printProtectionSummary(p *github.Protection) {
 	fmt.Printf("🔐 Require PR reviews: %v\n", p.RequiredPullRequestReviews != nil)
-	fmt.Printf("🔒 Enforce admins: %v\n", p.EnforceAdmins.Enabled)
-	fmt.Printf("✅ Required status checks: %v\n", p.RequiredStatusChecks.Contexts)
-	fmt.Printf("🧱 Require signed commits: %v\n", p.RequireSignatures.Enabled)
-	fmt.Printf("🔄 Linear history: %v\n", p.RequiredLinearHistory.Enabled)
+	fmt.Printf("🔒 Enforce admins: %v\n", p.EnforceAdmins.GetEnabled())
+
+	if p.RequiredStatusChecks != nil {
+		fmt.Printf("✅ Required status checks: %v\n", p.RequiredStatusChecks.Contexts)
+	} else {
+		fmt.Println("✅ Required status checks: Not configured")
+	}
+
+	if p.RequiredSignatures != nil {
+		fmt.Printf("🧱 Require signed commits: %v\n", p.RequiredSignatures.Enabled)
+	} else {
+		fmt.Println("🧱 Require signed commits: Not configured")
+	}
+
+	if p.RequiredLinearHistory != nil {
+		fmt.Printf("🔄 Linear history: %v\n", p.RequiredLinearHistory.Enabled)
+	} else {
+		fmt.Println("🔄 Linear history: Not configured")
+	}
 }
