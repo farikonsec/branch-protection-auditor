@@ -1,0 +1,23 @@
+name: Run Branch Protection Audit
+
+on:
+  workflow_dispatch:  # manual trigger from UI
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/setup-go@v4
+      with:
+        go-version: '1.21'
+
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: Run Auditor
+      env:
+        APP_ID: ${{ secrets.GH_APP_ID }}
+        INSTALLATION_ID: ${{ secrets.GH_INSTALLATION_ID }}
+        PRIVATE_KEY: ${{ secrets.GH_PRIVATE_KEY }}
+      run: go run main.go
