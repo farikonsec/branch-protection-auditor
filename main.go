@@ -58,19 +58,16 @@ func main() {
     protected := 0
     unprotected := 0
 
-    fmt.Println("🔍 Repositories and branch protection status:
-")
+    fmt.Println("🔍 Repositories and branch protection status:\n")
 
     for _, repo := range repos {
-        fmt.Printf("📁 %s
-", repo.GetName())
+        fmt.Printf("📁 %s\n", repo.GetName())
         total++
 
         branch := repo.GetDefaultBranch()
         p, _, err := client.Repositories.GetBranchProtection(ctx, org, repo.GetName(), branch)
         if err != nil {
-            fmt.Println("Branch protection: not configured or insufficient permissions
-")
+            fmt.Println("Branch protection: not configured or insufficient permissions\n")
             unprotected++
             continue
         }
@@ -82,14 +79,10 @@ func main() {
 
     elapsed := time.Since(start).Seconds()
     fmt.Println("🔄 Summary")
-    fmt.Printf("Repositories scanned: %d
-", total)
-    fmt.Printf("Protected branches found: %d
-", protected)
-    fmt.Printf("Unprotected or inaccessible branches: %d
-", unprotected)
-    fmt.Printf("Total time taken: %.2f seconds
-", elapsed)
+    fmt.Printf("Repositories scanned: %d\n", total)
+    fmt.Printf("Protected branches found: %d\n", protected)
+    fmt.Printf("Unprotected or inaccessible branches: %d\n", unprotected)
+    fmt.Printf("Total time taken: %.2f seconds\n", elapsed)
 }
 
 func parsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
