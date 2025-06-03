@@ -97,7 +97,6 @@ func parsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
     if block == nil {
         return nil, fmt.Errorf("failed to decode PEM block")
     }
-
     return jwt.ParseRSAPrivateKeyFromPEM([]byte(pemStr))
 }
 
@@ -108,7 +107,6 @@ func generateJWT(appID string, key *rsa.PrivateKey) (string, error) {
         ExpiresAt: jwt.NewNumericDate(now.Add(time.Minute * 10)),
         Issuer:    appID,
     }
-
     token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
     return token.SignedString(key)
 }
@@ -127,49 +125,33 @@ func printProtectionSummary(p *github.Protection) {
 
     if p.RequiredPullRequestReviews != nil {
         r := p.RequiredPullRequestReviews
-        fmt.Printf("Require PR before merge: enabled
-")
-        fmt.Printf("Required number of approvals: %d
-", r.RequiredApprovingReviewCount)
-        fmt.Printf("Dismiss stale reviews: %s
-", boolToString(r.DismissStaleReviews))
-        fmt.Printf("Code owner reviews: %s
-", boolToString(r.RequireCodeOwnerReviews))
+        fmt.Println("Require PR before merge:", boolToString(true))
+        fmt.Println("Required number of approvals:", r.RequiredApprovingReviewCount)
+        fmt.Println("Dismiss stale reviews:", boolToString(r.DismissStaleReviews))
+        fmt.Println("Code owner reviews:", boolToString(r.RequireCodeOwnerReviews))
 
         if r.DismissalRestrictions != nil {
-            users := extractLogins(r.DismissalRestrictions.Users)
-            teams := extractSlugs(r.DismissalRestrictions.Teams)
-            fmt.Printf("Restrict dismissals to users: %s
-", users)
-            fmt.Printf("Restrict dismissals to teams: %s
-", teams)
+            fmt.Println("Restrict dismissals to users:", extractLogins(r.DismissalRestrictions.Users))
+            fmt.Println("Restrict dismissals to teams:", extractSlugs(r.DismissalRestrictions.Teams))
         } else {
             fmt.Println("Restrict dismissals to users: not configured")
             fmt.Println("Restrict dismissals to teams: not configured")
         }
 
         if r.BypassPullRequestAllowances != nil {
-            users := extractLogins(r.BypassPullRequestAllowances.Users)
-            teams := extractSlugs(r.BypassPullRequestAllowances.Teams)
-            fmt.Printf("Bypass PR requirements for users: %s
-", users)
-            fmt.Printf("Bypass PR requirements for teams: %s
-", teams)
+            fmt.Println("Bypass PR requirements for users:", extractLogins(r.BypassPullRequestAllowances.Users))
+            fmt.Println("Bypass PR requirements for teams:", extractSlugs(r.BypassPullRequestAllowances.Teams))
         }
     } else {
-        fmt.Printf("Require PR before merge: disabled
-")
+        fmt.Println("Require PR before merge: disabled")
     }
 
     if p.RequiredStatusChecks != nil {
         s := p.RequiredStatusChecks
-        fmt.Printf("Require status checks: enabled
-")
-        fmt.Printf("Status check strict mode: %s
-", boolToString(s.Strict))
+        fmt.Println("Require status checks: enabled")
+        fmt.Println("Status check strict mode:", boolToString(s.Strict))
         if len(s.Contexts) > 0 {
-            fmt.Printf("Status check contexts: %v
-", s.Contexts)
+            fmt.Println("Status check contexts:", strings.Join(s.Contexts, ", "))
         } else {
             fmt.Println("Status check contexts: none configured")
         }
@@ -178,36 +160,31 @@ func printProtectionSummary(p *github.Protection) {
     }
 
     if p.EnforceAdmins != nil {
-        fmt.Printf("Enforce admins: %s
-", boolToString(p.EnforceAdmins.Enabled))
+        fmt.Println("Enforce admins:", boolToString(p.EnforceAdmins.Enabled))
     } else {
         fmt.Println("Enforce admins: not configured")
     }
 
     if p.RequiredSignatures != nil && p.RequiredSignatures.Enabled != nil {
-        fmt.Printf("Require signed commits: %s
-", boolToString(*p.RequiredSignatures.Enabled))
+        fmt.Println("Require signed commits:", boolToString(*p.RequiredSignatures.Enabled))
     } else {
         fmt.Println("Require signed commits: not configured")
     }
 
     if p.RequiredConversationResolution != nil {
-        fmt.Printf("Require conversation resolution: %s
-", boolToString(p.RequiredConversationResolution.Enabled))
+        fmt.Println("Require conversation resolution:", boolToString(p.RequiredConversationResolution.Enabled))
     } else {
         fmt.Println("Require conversation resolution: not configured")
     }
 
     if p.AllowForcePushes != nil {
-        fmt.Printf("Allow force pushes: %s
-", boolToString(p.AllowForcePushes.Enabled))
+        fmt.Println("Allow force pushes:", boolToString(p.AllowForcePushes.Enabled))
     } else {
         fmt.Println("Allow force pushes: not configured")
     }
 
     if p.AllowDeletions != nil {
-        fmt.Printf("Allow deletions: %s
-", boolToString(p.AllowDeletions.Enabled))
+        fmt.Println("Allow deletions:", boolToString(p.AllowDeletions.Enabled))
     } else {
         fmt.Println("Allow deletions: not configured")
     }
