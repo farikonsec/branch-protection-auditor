@@ -8,7 +8,6 @@ import (
     "fmt"
     "log"
     "os"
-    "strings"
     "time"
 
     "github.com/golang-jwt/jwt/v5"
