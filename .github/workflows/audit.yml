@@ -21,9 +21,9 @@ jobs:
 
     - name: Run auditor
       env:
-        APP_ID: ${{ secrets.APP_ID }}
-        INSTALLATION_ID: ${{ secrets.INSTALLATION_ID }}
-        PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+        APP_ID: ${{ secrets.GH_APP_ID }}
+        INSTALLATION_ID: ${{ secrets.GH_INSTALLATION_ID }}
+        PRIVATE_KEY: ${{ secrets.GH_PRIVATE_KEY }}
       run: go run main.go
 
     - name: Upload branch protection report
