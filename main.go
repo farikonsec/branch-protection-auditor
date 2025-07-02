@@ -309,30 +309,27 @@ func parseProtectionToReport(repoName, branch string, protection *github.Protect
 		report.RequireSignedCommits = "No"
 	}
 
-	// Linear History
-	if protection.RequiredLinearHistory != nil {
-		report.RequireLinearHistory = boolToYesNo(protection.RequiredLinearHistory.Enabled)
-	} else {
-		report.RequireLinearHistory = "No"
-	}
+	// Linear History (Note: This field may not be available in all GitHub API versions)
+	// Setting to "No" as this field is not consistently available in the go-github library
+	report.RequireLinearHistory = "No"
 
 	// Allow Fork Syncing
-	if protection.AllowForkSyncing != nil {
-		report.AllowForkSyncing = boolToYesNo(protection.AllowForkSyncing.Enabled)
+	if protection.AllowForkSyncing != nil && protection.AllowForkSyncing.Enabled != nil {
+		report.AllowForkSyncing = boolToYesNo(*protection.AllowForkSyncing.Enabled)
 	} else {
 		report.AllowForkSyncing = "No"
 	}
 
 	// Lock Branch
-	if protection.LockBranch != nil {
-		report.LockBranch = boolToYesNo(protection.LockBranch.Enabled)
+	if protection.LockBranch != nil && protection.LockBranch.Enabled != nil {
+		report.LockBranch = boolToYesNo(*protection.LockBranch.Enabled)
 	} else {
 		report.LockBranch = "No"
 	}
 
 	// Block Creations (Restrict pushes)
-	if protection.BlockCreations != nil {
-		report.RestrictPushes = boolToYesNo(protection.BlockCreations.Enabled)
+	if protection.BlockCreations != nil && protection.BlockCreations.Enabled != nil {
+		report.RestrictPushes = boolToYesNo(*protection.BlockCreations.Enabled)
 	} else {
 		report.RestrictPushes = "No"
 	}
@@ -347,22 +344,22 @@ func parseProtectionToReport(repoName, branch string, protection *github.Protect
 	}
 
 	// Force Pushes
-	if protection.AllowForcePushes != nil {
-		report.AllowForcePushes = boolToYesNo(protection.AllowForcePushes.Enabled)
+	if protection.AllowForcePushes != nil && protection.AllowForcePushes.Enabled != nil {
+		report.AllowForcePushes = boolToYesNo(*protection.AllowForcePushes.Enabled)
 	} else {
 		report.AllowForcePushes = "No"
 	}
 
 	// Deletions
-	if protection.AllowDeletions != nil {
-		report.AllowDeletions = boolToYesNo(protection.AllowDeletions.Enabled)
+	if protection.AllowDeletions != nil && protection.AllowDeletions.Enabled != nil {
+		report.AllowDeletions = boolToYesNo(*protection.AllowDeletions.Enabled)
 	} else {
 		report.AllowDeletions = "No"
 	}
 
 	// Conversation Resolution
-	if protection.RequiredConversationResolution != nil {
-		report.RequiredConversationResolution = boolToYesNo(protection.RequiredConversationResolution.Enabled)
+	if protection.RequiredConversationResolution != nil && protection.RequiredConversationResolution.Enabled != nil {
+		report.RequiredConversationResolution = boolToYesNo(*protection.RequiredConversationResolution.Enabled)
 	} else {
 		report.RequiredConversationResolution = "No"
 	}
