@@ -1,4 +1,4 @@
-# Branch Protection Auditor
+# Github Organization Branch Protection Auditor
 
 This project automates the audit of **branch protection settings** across all repositories in a GitHub organization. It helps ensure security policies like mandatory pull request reviews, status checks, and signed commits are enforced consistently.
 
