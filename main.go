@@ -343,23 +343,23 @@ func parseProtectionToReport(repoName, branch string, protection *github.Protect
 		report.TeamPushRestrictions = "None configured"
 	}
 
-	// Force Pushes
-	if protection.AllowForcePushes != nil && protection.AllowForcePushes.Enabled != nil {
-		report.AllowForcePushes = boolToYesNo(*protection.AllowForcePushes.Enabled)
+	// Force Pushes - Fixed: direct bool access
+	if protection.AllowForcePushes != nil {
+		report.AllowForcePushes = boolToYesNo(protection.AllowForcePushes.Enabled)
 	} else {
 		report.AllowForcePushes = "No"
 	}
 
-	// Deletions
-	if protection.AllowDeletions != nil && protection.AllowDeletions.Enabled != nil {
-		report.AllowDeletions = boolToYesNo(*protection.AllowDeletions.Enabled)
+	// Deletions - Fixed: direct bool access
+	if protection.AllowDeletions != nil {
+		report.AllowDeletions = boolToYesNo(protection.AllowDeletions.Enabled)
 	} else {
 		report.AllowDeletions = "No"
 	}
 
-	// Conversation Resolution
-	if protection.RequiredConversationResolution != nil && protection.RequiredConversationResolution.Enabled != nil {
-		report.RequiredConversationResolution = boolToYesNo(*protection.RequiredConversationResolution.Enabled)
+	// Conversation Resolution - Fixed: direct bool access
+	if protection.RequiredConversationResolution != nil {
+		report.RequiredConversationResolution = boolToYesNo(protection.RequiredConversationResolution.Enabled)
 	} else {
 		report.RequiredConversationResolution = "No"
 	}
