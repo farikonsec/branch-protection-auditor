@@ -3,6 +3,7 @@ package main
 import (
     "context"
     "crypto/rsa"
+    "encoding/csv"
     "encoding/pem"
     "fmt"
     "log"
@@ -38,8 +39,6 @@ func main() {
     }
 
     ctx := context.Background()
-    
-    // Create client with JWT token for app authentication
     jwtTokenSource := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: jwtToken})
     jwtClient := oauth2.NewClient(ctx, jwtTokenSource)
     client := github.NewClient(jwtClient)
@@ -58,35 +57,91 @@ func main() {
         log.Fatalf("Failed to list repositories: %v", err)
     }
 
-    total := 0
-    protected := 0
-    unprotected := 0
+    total, protected, unprotected := 0, 0, 0
+    fmt.Println("Scanning repositories...")
 
-    fmt.Println("🔍 Repositories and branch protection status:\n")
+    csvFile, err := os.Create("branch_protection_report.csv")
+    if err != nil {
+        log.Fatalf("Could not create CSV file: %v", err)
+    }
+    defer csvFile.Close()
+    writer := csv.NewWriter(csvFile)
+    defer writer.Flush()
+
+    headers := []string{"Repository", "RequirePR", "Approvals", "DismissStale", "CodeOwnerReviews", "EnforceAdmins", "SignedCommits", "ConversationResolution", "StatusChecks", "StrictStatus", "ForcePushes", "Deletions"}
+    writer.Write(headers)
 
     for _, repo := range repos {
-        fmt.Printf("📁 %s\n", repo.GetName())
         total++
-
         branch := repo.GetDefaultBranch()
         p, _, err := client.Repositories.GetBranchProtection(ctx, org, repo.GetName(), branch)
         if err != nil {
-            fmt.Println("Branch protection: not configured or insufficient permissions\n")
             unprotected++
             continue
         }
 
-        printProtectionSummary(p)
-        fmt.Println()
+        record := []string{repo.GetName()}
+
+        if p.RequiredPullRequestReviews != nil {
+            r := p.RequiredPullRequestReviews
+            record = append(record,
+                "enabled",
+                fmt.Sprintf("%d", r.RequiredApprovingReviewCount),
+                boolToString(r.DismissStaleReviews),
+                boolToString(r.RequireCodeOwnerReviews),
+            )
+        } else {
+            record = append(record, "disabled", "0", "disabled", "disabled")
+        }
+
+        if p.EnforceAdmins != nil {
+            record = append(record, boolToString(p.EnforceAdmins.Enabled))
+        } else {
+            record = append(record, "not configured")
+        }
+
+        if p.RequiredSignatures != nil && p.RequiredSignatures.Enabled != nil {
+            record = append(record, boolToString(*p.RequiredSignatures.Enabled))
+        } else {
+            record = append(record, "not configured")
+        }
+
+        if p.RequiredConversationResolution != nil {
+            record = append(record, boolToString(p.RequiredConversationResolution.Enabled))
+        } else {
+            record = append(record, "not configured")
+        }
+
+        if p.RequiredStatusChecks != nil {
+            s := p.RequiredStatusChecks
+            record = append(record, "enabled", boolToString(s.Strict))
+        } else {
+            record = append(record, "disabled", "disabled")
+        }
+
+        if p.AllowForcePushes != nil {
+            record = append(record, boolToString(p.AllowForcePushes.Enabled))
+        } else {
+            record = append(record, "not configured")
+        }
+
+        if p.AllowDeletions != nil {
+            record = append(record, boolToString(p.AllowDeletions.Enabled))
+        } else {
+            record = append(record, "not configured")
+        }
+
+        writer.Write(record)
         protected++
     }
 
     elapsed := time.Since(start).Seconds()
-    fmt.Println("🔄 Summary")
+    fmt.Println("Scan complete.")
     fmt.Printf("Repositories scanned: %d\n", total)
     fmt.Printf("Protected branches found: %d\n", protected)
     fmt.Printf("Unprotected or inaccessible branches: %d\n", unprotected)
     fmt.Printf("Total time taken: %.2f seconds\n", elapsed)
+    fmt.Println("CSV report saved as branch_protection_report.csv")
 }
 
 func parsePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
@@ -114,104 +169,9 @@ func parseInt64(s string) int64 {
     return id
 }
 
-func printProtectionSummary(p *github.Protection) {
-    if p == nil {
-        fmt.Println("Branch protection: not configured")
-        return
-    }
-
-    if p.RequiredPullRequestReviews != nil {
-        r := p.RequiredPullRequestReviews
-        fmt.Println("Require PR before merge:", boolToString(true))
-        fmt.Println("Required number of approvals:", r.RequiredApprovingReviewCount)
-        fmt.Println("Dismiss stale reviews:", boolToString(r.DismissStaleReviews))
-        fmt.Println("Code owner reviews:", boolToString(r.RequireCodeOwnerReviews))
-
-        if r.DismissalRestrictions != nil {
-            fmt.Println("Restrict dismissals to users:", extractLogins(r.DismissalRestrictions.Users))
-            fmt.Println("Restrict dismissals to teams:", extractSlugs(r.DismissalRestrictions.Teams))
-        } else {
-            fmt.Println("Restrict dismissals to users: not configured")
-            fmt.Println("Restrict dismissals to teams: not configured")
-        }
-
-        if r.BypassPullRequestAllowances != nil {
-            fmt.Println("Bypass PR requirements for users:", extractLogins(r.BypassPullRequestAllowances.Users))
-            fmt.Println("Bypass PR requirements for teams:", extractSlugs(r.BypassPullRequestAllowances.Teams))
-        }
-    } else {
-        fmt.Println("Require PR before merge: disabled")
-    }
-
-    if p.RequiredStatusChecks != nil {
-        s := p.RequiredStatusChecks
-        fmt.Println("Require status checks: enabled")
-        fmt.Println("Status check strict mode:", boolToString(s.Strict))
-        if len(s.Contexts) > 0 {
-            fmt.Println("Status check contexts:", strings.Join(s.Contexts, ", "))
-        } else {
-            fmt.Println("Status check contexts: none configured")
-        }
-    } else {
-        fmt.Println("Require status checks: disabled")
-    }
-
-    if p.EnforceAdmins != nil {
-        fmt.Println("Enforce admins:", boolToString(p.EnforceAdmins.Enabled))
-    } else {
-        fmt.Println("Enforce admins: not configured")
-    }
-
-    if p.RequiredSignatures != nil && p.RequiredSignatures.Enabled != nil {
-        fmt.Println("Require signed commits:", boolToString(*p.RequiredSignatures.Enabled))
-    } else {
-        fmt.Println("Require signed commits: not configured")
-    }
-
-    if p.RequiredConversationResolution != nil {
-        fmt.Println("Require conversation resolution:", boolToString(p.RequiredConversationResolution.Enabled))
-    } else {
-        fmt.Println("Require conversation resolution: not configured")
-    }
-
-    if p.AllowForcePushes != nil {
-        fmt.Println("Allow force pushes:", boolToString(p.AllowForcePushes.Enabled))
-    } else {
-        fmt.Println("Allow force pushes: not configured")
-    }
-
-    if p.AllowDeletions != nil {
-        fmt.Println("Allow deletions:", boolToString(p.AllowDeletions.Enabled))
-    } else {
-        fmt.Println("Allow deletions: not configured")
-    }
-}
-
 func boolToString(b bool) string {
     if b {
         return "enabled"
     }
     return "disabled"
-}
-
-func extractLogins(users []*github.User) string {
-    if len(users) == 0 {
-        return "none"
-    }
-    var list []string
-    for _, u := range users {
-        list = append(list, u.GetLogin())
-    }
-    return strings.Join(list, ", ")
-}
-
-func extractSlugs(teams []*github.Team) string {
-    if len(teams) == 0 {
-        return "none"
-    }
-    var list []string
-    for _, t := range teams {
-        list = append(list, t.GetSlug())
-    }
-    return strings.Join(list, ", ")
 }
