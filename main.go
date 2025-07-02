@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/csv"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -17,6 +18,80 @@ import (
 	"github.com/google/go-github/v53/github"
 	"golang.org/x/oauth2"
 )
+
+// Logger provides structured logging
+type Logger struct {
+	prefix string
+}
+
+func NewLogger(prefix string) *Logger {
+	return &Logger{prefix: prefix}
+}
+
+func (l *Logger) Info(msg string, fields ...interface{}) {
+	l.log("INFO", msg, fields...)
+}
+
+func (l *Logger) Error(msg string, fields ...interface{}) {
+	l.log("ERROR", msg, fields...)
+}
+
+func (l *Logger) Warn(msg string, fields ...interface{}) {
+	l.log("WARN", msg, fields...)
+}
+
+func (l *Logger) log(level, msg string, fields ...interface{}) {
+	timestamp := time.Now().Format("2006-01-02T15:04:05Z07:00")
+	logEntry := map[string]interface{}{
+		"timestamp": timestamp,
+		"level":     level,
+		"message":   msg,
+		"service":   l.prefix,
+	}
+	
+	// Add additional fields as key-value pairs
+	for i := 0; i < len(fields); i += 2 {
+		if i+1 < len(fields) {
+			logEntry[fmt.Sprintf("%v", fields[i])] = fields[i+1]
+		}
+	}
+	
+	jsonLog, _ := json.Marshal(logEntry)
+	fmt.Println(string(jsonLog))
+}
+
+// RateLimitHandler manages GitHub API rate limiting
+type RateLimitHandler struct {
+	logger *Logger
+}
+
+func NewRateLimitHandler(logger *Logger) *RateLimitHandler {
+	return &RateLimitHandler{logger: logger}
+}
+
+func (r *RateLimitHandler) HandleRateLimit(resp *github.Response) {
+	if resp == nil || resp.Rate.Limit == 0 {
+		return
+	}
+	
+	remaining := resp.Rate.Remaining
+	limit := resp.Rate.Limit
+	resetTime := resp.Rate.Reset.Time
+	
+	r.logger.Info("Rate limit status", 
+		"remaining", remaining, 
+		"limit", limit, 
+		"reset_time", resetTime.Format(time.RFC3339))
+	
+	// If we're getting close to the limit (less than 10% remaining), sleep until reset
+	if remaining < limit/10 {
+		sleepDuration := time.Until(resetTime).Add(time.Second * 10) // Add 10s buffer
+		r.logger.Warn("Approaching rate limit, sleeping", 
+			"sleep_duration", sleepDuration.String(),
+			"remaining", remaining)
+		time.Sleep(sleepDuration)
+	}
+}
 
 // BranchProtectionReport represents a comprehensive branch protection report
 type BranchProtectionReport struct {
@@ -49,6 +124,8 @@ type BranchProtectionReport struct {
 
 func main() {
 	start := time.Now()
+	logger := NewLogger("github-branch-scanner")
+	rateLimitHandler := NewRateLimitHandler(logger)
 
 	appID := os.Getenv("APP_ID")
 	installationID := os.Getenv("INSTALLATION_ID")
@@ -59,16 +136,24 @@ func main() {
 	}
 
 	if appID == "" || installationID == "" || privateKeyPEM == "" {
+		logger.Error("Missing required environment variables", 
+			"app_id_set", appID != "",
+			"installation_id_set", installationID != "",
+			"private_key_set", privateKeyPEM != "")
 		log.Fatal("Missing APP_ID, INSTALLATION_ID, or PRIVATE_KEY environment variables")
 	}
 
+	logger.Info("Starting GitHub branch protection scanner", "organization", org)
+
 	key, err := parsePrivateKey(privateKeyPEM)
 	if err != nil {
+		logger.Error("Failed to parse private key", "error", err.Error())
 		log.Fatalf("Failed to parse private key: %v", err)
 	}
 
 	jwtToken, err := generateJWT(appID, key)
 	if err != nil {
+		logger.Error("Failed to generate JWT", "error", err.Error())
 		log.Fatalf("Failed to generate JWT: %v", err)
 	}
 
@@ -77,28 +162,52 @@ func main() {
 	jwtClient := oauth2.NewClient(ctx, jwtTokenSource)
 	client := github.NewClient(jwtClient)
 
-	token, _, err := client.Apps.CreateInstallationToken(ctx, parseInt64(installationID), nil)
+	token, resp, err := client.Apps.CreateInstallationToken(ctx, parseInt64(installationID), nil)
 	if err != nil {
+		logger.Error("Failed to create installation token", "error", err.Error())
 		log.Fatalf("Failed to create installation token: %v", err)
 	}
+	rateLimitHandler.HandleRateLimit(resp)
 
 	ts := oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token.GetToken()})
 	tc := oauth2.NewClient(ctx, ts)
 	client = github.NewClient(tc)
 
-	repos, _, err := client.Repositories.ListByOrg(ctx, org, &github.RepositoryListByOrgOptions{
+	// Fetch all repositories with pagination
+	logger.Info("Fetching repositories with pagination")
+	var allRepos []*github.Repository
+	opt := &github.RepositoryListByOrgOptions{
 		Type: "all",
 		ListOptions: github.ListOptions{PerPage: 100},
-	})
-	if err != nil {
-		log.Fatalf("Failed to list repositories: %v", err)
 	}
 
-	total := len(repos)
-	fmt.Printf("Found %d repositories. Starting scan...\n", total)
+	for {
+		repos, resp, err := client.Repositories.ListByOrg(ctx, org, opt)
+		if err != nil {
+			logger.Error("Failed to list repositories", "error", err.Error(), "page", opt.Page)
+			log.Fatalf("Failed to list repositories: %v", err)
+		}
+		
+		rateLimitHandler.HandleRateLimit(resp)
+		allRepos = append(allRepos, repos...)
+		
+		logger.Info("Fetched repositories page", 
+			"page", opt.Page, 
+			"repos_in_page", len(repos), 
+			"total_so_far", len(allRepos))
+		
+		if resp.NextPage == 0 {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
+
+	total := len(allRepos)
+	logger.Info("Repository discovery complete", "total_repositories", total)
 
 	csvFile, err := os.Create("branch_protection_report.csv")
 	if err != nil {
+		logger.Error("Could not create CSV file", "error", err.Error())
 		log.Fatalf("Could not create CSV file: %v", err)
 	}
 	defer csvFile.Close()
@@ -135,6 +244,7 @@ func main() {
 	}
 	
 	if err := writer.Write(headers); err != nil {
+		logger.Error("Failed to write CSV headers", "error", err.Error())
 		log.Fatalf("Failed to write CSV headers: %v", err)
 	}
 
@@ -143,23 +253,28 @@ func main() {
 	semaphore := make(chan struct{}, 10) // Limit concurrent requests
 	mu := sync.Mutex{}
 	
-	protected, unprotected := 0, 0
+	protected, unprotected, errors := 0, 0, 0
 
-	for _, repo := range repos {
+	logger.Info("Starting concurrent repository processing", "concurrency_limit", 10)
+
+	for i, repo := range allRepos {
 		wg.Add(1)
-		go func(repo *github.Repository) {
+		go func(repo *github.Repository, index int) {
 			defer wg.Done()
 			semaphore <- struct{}{} // Acquire
 			defer func() { <-semaphore }() // Release
 
-			report := processRepository(ctx, client, org, repo)
+			report, resp := processRepository(ctx, client, org, repo, logger, rateLimitHandler)
 			
 			mu.Lock()
 			defer mu.Unlock()
 			
 			if report != nil {
 				if err := writer.Write(reportToSlice(report)); err != nil {
-					log.Printf("Failed to write report for %s: %v", repo.GetName(), err)
+					logger.Error("Failed to write report", 
+						"repository", repo.GetName(), 
+						"error", err.Error())
+					errors++
 				} else {
 					if report.RequirePullRequestBeforeMerging != "No" {
 						protected++
@@ -169,22 +284,43 @@ func main() {
 				}
 			} else {
 				unprotected++
+				if resp == nil || (resp.StatusCode != 404 && resp.StatusCode != 403) {
+					errors++
+				}
 			}
-		}(repo)
+			
+			// Log progress every 10 repositories
+			if (index+1)%10 == 0 {
+				logger.Info("Processing progress", 
+					"completed", index+1, 
+					"total", total, 
+					"protected", protected, 
+					"unprotected", unprotected,
+					"errors", errors)
+			}
+		}(repo, i)
 	}
 
 	wg.Wait()
 
 	elapsed := time.Since(start).Seconds()
-	fmt.Println("\nScan complete.")
+	logger.Info("Scan complete", 
+		"total_repositories", total,
+		"protected_branches", protected,
+		"unprotected_or_inaccessible", unprotected,
+		"errors", errors,
+		"duration_seconds", elapsed)
+	
+	fmt.Printf("\nScan complete.\n")
 	fmt.Printf("Repositories scanned: %d\n", total)
 	fmt.Printf("Protected branches found: %d\n", protected)
 	fmt.Printf("Unprotected or inaccessible branches: %d\n", unprotected)
+	fmt.Printf("Errors encountered: %d\n", errors)
 	fmt.Printf("Total time taken: %.2f seconds\n", elapsed)
 	fmt.Println("CSV report saved as branch_protection_report.csv")
 }
 
-func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository) *BranchProtectionReport {
+func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository, logger *Logger, rateLimitHandler *RateLimitHandler) (*BranchProtectionReport, *github.Response) {
 	repoName := repo.GetName()
 	defaultBranch := repo.GetDefaultBranch()
 	
@@ -192,12 +328,20 @@ func processRepository(ctx context.Context, client *github.Client, org string, r
 		defaultBranch = "main"
 	}
 
-	fmt.Printf("Processing: %s/%s (branch: %s)\n", org, repoName, defaultBranch)
+	logger.Info("Processing repository", 
+		"repository", fmt.Sprintf("%s/%s", org, repoName), 
+		"branch", defaultBranch)
 
 	protection, resp, err := client.Repositories.GetBranchProtection(ctx, org, repoName, defaultBranch)
+	
+	// Handle rate limiting
+	rateLimitHandler.HandleRateLimit(resp)
+	
 	if err != nil {
 		// Check if it's a 404 (no protection) vs other errors
 		if resp != nil && resp.StatusCode == 404 {
+			logger.Info("No branch protection configured", 
+				"repository", fmt.Sprintf("%s/%s", org, repoName))
 			// No protection configured
 			return &BranchProtectionReport{
 				Repository:                      repoName,
@@ -225,13 +369,24 @@ func processRepository(ctx context.Context, client *github.Client, org string, r
 				TeamPushRestrictions:          "None configured",
 				AllowForcePushes:              "No",
 				AllowDeletions:                "No",
-			}
+			}, resp
 		}
-		log.Printf("Failed to get protection for %s/%s: %v", org, repoName, err)
-		return nil
+		
+		statusCode := "unknown"
+		if resp != nil {
+			statusCode = fmt.Sprintf("%d", resp.StatusCode)
+		}
+		
+		logger.Error("Failed to get branch protection", 
+			"repository", fmt.Sprintf("%s/%s", org, repoName),
+			"error", err.Error(),
+			"status_code", statusCode)
+		return nil, resp
 	}
 
-	return parseProtectionToReport(repoName, defaultBranch, protection)
+	logger.Info("Successfully retrieved branch protection", 
+		"repository", fmt.Sprintf("%s/%s", org, repoName))
+	return parseProtectionToReport(repoName, defaultBranch, protection), resp
 }
 
 func parseProtectionToReport(repoName, branch string, protection *github.Protection) *BranchProtectionReport {
