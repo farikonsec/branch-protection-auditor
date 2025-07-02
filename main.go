@@ -85,7 +85,7 @@ func (r *RateLimitHandler) HandleRateLimit(resp *github.Response) {
 	
 	// If we're getting close to the limit (less than 10% remaining), sleep until reset
 	if remaining < limit/10 {
-		sleepDuration := time.Until(resetTime).Add(time.Second * 10) // Add 10s buffer
+		sleepDuration := time.Until(resetTime) + time.Second*10 // Add 10s buffer
 		r.logger.Warn("Approaching rate limit, sleeping", 
 			"sleep_duration", sleepDuration.String(),
 			"remaining", remaining)
