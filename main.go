@@ -9,7 +9,6 @@ import (
     "log"
     "os"
     "time"
-
     "github.com/golang-jwt/jwt/v5"
     "github.com/google/go-github/v53/github"
     "golang.org/x/oauth2"
