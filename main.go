@@ -97,7 +97,7 @@ func main() {
 	total := len(repos)
 	fmt.Printf("Found %d repositories. Starting scan...\n", total)
 
-	csvFile, err := os.Create("comprehensive_branch_protection_report.csv")
+	csvFile, err := os.Create("branch_protection_report.csv")
 	if err != nil {
 		log.Fatalf("Could not create CSV file: %v", err)
 	}
@@ -181,7 +181,7 @@ func main() {
 	fmt.Printf("Protected branches found: %d\n", protected)
 	fmt.Printf("Unprotected or inaccessible branches: %d\n", unprotected)
 	fmt.Printf("Total time taken: %.2f seconds\n", elapsed)
-	fmt.Println("Comprehensive CSV report saved as comprehensive_branch_protection_report.csv")
+	fmt.Println("CSV report saved as branch_protection_report.csv")
 }
 
 func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository) *BranchProtectionReport {
