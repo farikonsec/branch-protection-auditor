@@ -18,10 +18,7 @@ jobs:
         APP_ID: ${{ secrets.GH_APP_ID }}
         INSTALLATION_ID: ${{ secrets.GH_INSTALLATION_ID }}
         PRIVATE_KEY: ${{ secrets.GH_PRIVATE_KEY }}
-      run: |
-        echo "::group::Application Logs"
-        go run main.go
-        echo "::endgroup::"
+      run: go run main.go
     - name: Upload branch protection report
       uses: actions/upload-artifact@v4
       with:
