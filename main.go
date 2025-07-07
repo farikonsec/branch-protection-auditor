@@ -101,7 +101,8 @@ func main() {
 
 	totalRepos = len(repos)
 
-	fmt.Printf("::group::Application Logs\n")
+	// Start Progress Updates group
+	fmt.Printf("::group::Progress Updates\n")
 	fmt.Printf("Found %d repositories. Starting scan...\n", totalRepos)
 
 	csvFile, err := os.Create("branch_protection_report.csv")
@@ -113,6 +114,7 @@ func main() {
 	writer := csv.NewWriter(csvFile)
 	defer writer.Flush()
 
+	// CSV headers for report
 	headers := []string{
 		"Repository", "Branch",
 		"Require a Pull Request Before Merging",
@@ -145,9 +147,13 @@ func main() {
 	}
 
 	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, 10)
+	semaphore := make(chan struct{}, 10) // Concurrency limiter
 
 	protected, unprotected := 0, 0
+
+	// Start Debug Logs group (after Progress Updates for better separation)
+	fmt.Printf("::endgroup::\n") // End Progress Updates group early so logs don't mix
+	fmt.Printf("::group::Debug Logs\n")
 
 	for _, repo := range repos {
 		wg.Add(1)
@@ -162,7 +168,10 @@ func main() {
 			defer mu.Unlock()
 
 			processedRepos++
+			// Reopen Progress Updates group temporarily to update progress bar cleanly
+			fmt.Printf("::group::Progress Updates\n")
 			showProgress()
+			fmt.Printf("::endgroup::\n")
 
 			if report != nil {
 				if err := writer.Write(reportToSlice(report)); err != nil {
@@ -181,9 +190,11 @@ func main() {
 	}
 
 	wg.Wait()
-	fmt.Println()
-	fmt.Printf("::endgroup::\n") // Close Application Logs group
 
+	// End Debug Logs group
+	fmt.Printf("::endgroup::\n") // Close Debug Logs group
+
+	// Start Summary group
 	fmt.Printf("::group::Summary\n")
 
 	elapsed := time.Since(startTime).Seconds()
@@ -208,6 +219,7 @@ func main() {
 	}
 
 	fmt.Println("CSV report saved as branch_protection_report.csv")
+	// End Summary group
 	fmt.Printf("::endgroup::\n")
 }
 
@@ -217,6 +229,9 @@ func processRepository(ctx context.Context, client *github.Client, org string, r
 	if defaultBranch == "" {
 		defaultBranch = "main"
 	}
+
+	// Detailed log for each repository
+	fmt.Printf("Processing: %s/%s (branch: %s)\n", org, repoName, defaultBranch)
 
 	protection, resp, err := client.Repositories.GetBranchProtection(ctx, org, repoName, defaultBranch)
 	if err != nil {
