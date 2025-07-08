@@ -56,6 +56,10 @@ var (
 	errorMessages   []string
 	warningMessages []string
 	mu              sync.Mutex
+
+	// New counters for detailed summary
+	noProtection, noPRRequired, oneApproval, twoToThreeApprovals, allowPushes                               int
+	activeNoProtection, activeNoPRRequired, activeOneApproval, activeTwoToThreeApprovals, activeAllowPushes int
 )
 
 type Logger struct {
@@ -297,6 +301,45 @@ func main() {
 					activeUnprotected++
 				}
 			}
+
+			// Detailed summary counters
+			if report != nil {
+				// No branch protection
+				if report.RequirePullRequestBeforeMerging == "No" {
+					noProtection++
+					if isActive {
+						activeNoProtection++
+					}
+				}
+				// No PR required
+				if report.RequireApprovals == "No" {
+					noPRRequired++
+					if isActive {
+						activeNoPRRequired++
+					}
+				}
+				// Number of approvals
+				if n, err := strconv.Atoi(report.RequiredNumberOfApprovals); err == nil {
+					if n == 1 {
+						oneApproval++
+						if isActive {
+							activeOneApproval++
+						}
+					} else if n >= 2 && n <= 3 {
+						twoToThreeApprovals++
+						if isActive {
+							activeTwoToThreeApprovals++
+						}
+					}
+				}
+				// Allow force pushes
+				if report.AllowForcePushes == "Yes" {
+					allowPushes++
+					if isActive {
+						activeAllowPushes++
+					}
+				}
+			}
 		}(repo)
 	}
 
@@ -325,6 +368,26 @@ func main() {
 	fmt.Printf("\nActive Repositories (last 90 days):\n")
 	fmt.Printf("Active protected: %d\n", activeProtected)
 	fmt.Printf("Active unprotected or inaccessible: %d\n", activeUnprotected)
+
+	// Detailed summary section
+	fmt.Printf("\nDetailed Summary (All Repos):\n")
+	if totalRepos > 0 {
+		fmt.Printf("- %.1f%% (%d) have no branch protection\n", float64(noProtection)/float64(totalRepos)*100, noProtection)
+		fmt.Printf("- %.1f%% (%d) don’t require PR reviews before merging\n", float64(noPRRequired)/float64(totalRepos)*100, noPRRequired)
+		fmt.Printf("- %.1f%% (%d) require exactly 1 approval\n", float64(oneApproval)/float64(totalRepos)*100, oneApproval)
+		fmt.Printf("- %.1f%% (%d) require 2–3 approvals\n", float64(twoToThreeApprovals)/float64(totalRepos)*100, twoToThreeApprovals)
+		fmt.Printf("- %.1f%% (%d) allow force pushes\n", float64(allowPushes)/float64(totalRepos)*100, allowPushes)
+	}
+
+	activeTotal := activeProtected + activeUnprotected
+	if activeTotal > 0 {
+		fmt.Printf("\nDetailed Summary (Active Repos Only):\n")
+		fmt.Printf("- %.1f%% (%d) have no branch protection\n", float64(activeNoProtection)/float64(activeTotal)*100, activeNoProtection)
+		fmt.Printf("- %.1f%% (%d) don’t require PR reviews before merging\n", float64(activeNoPRRequired)/float64(activeTotal)*100, activeNoPRRequired)
+		fmt.Printf("- %.1f%% (%d) require exactly 1 approval\n", float64(activeOneApproval)/float64(activeTotal)*100, activeOneApproval)
+		fmt.Printf("- %.1f%% (%d) require 2–3 approvals\n", float64(activeTwoToThreeApprovals)/float64(activeTotal)*100, activeTwoToThreeApprovals)
+		fmt.Printf("- %.1f%% (%d) allow force pushes\n", float64(activeAllowPushes)/float64(activeTotal)*100, activeAllowPushes)
+	}
 
 	if len(errorMessages) > 0 {
 		fmt.Printf("\nErrors encountered (%d):\n", len(errorMessages))
