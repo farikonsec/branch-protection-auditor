@@ -380,7 +380,7 @@ func main() {
 		fmt.Printf("- %.1f%% (%d) allow force pushes\n", float64(allowPushes)/float64(totalRepos)*100, allowPushes)
 	}
 
-	activeTotal := activeProtected + activeUnprotected
+	activeTotal = activeProtected + activeUnprotected
 	if activeTotal > 0 {
 		fmt.Printf("\nDetailed Summary (Active Repos Only):\n")
 		fmt.Printf("- %.1f%% (%d) have no branch protection\n", float64(activeNoProtection)/float64(activeTotal)*100, activeNoProtection)
