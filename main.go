@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rsa"
 	"encoding/csv"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"log"
@@ -55,10 +56,83 @@ var (
 	mu              sync.Mutex
 )
 
+type Logger struct {
+	mu sync.Mutex
+}
+
+func (l *Logger) Info(message string, fields map[string]interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	logEntry := map[string]interface{}{
+		"level":   "INFO",
+		"message": message,
+	}
+	for k, v := range fields {
+		logEntry[k] = v
+	}
+	b, err := jsonMarshal(logEntry)
+	if err != nil {
+		log.Printf("Failed to marshal log entry: %v", err)
+		return
+	}
+	fmt.Println(string(b))
+}
+
+func (l *Logger) Error(message string, fields map[string]interface{}) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	logEntry := map[string]interface{}{
+		"level":   "ERROR",
+		"message": message,
+	}
+	for k, v := range fields {
+		logEntry[k] = v
+	}
+	b, err := jsonMarshal(logEntry)
+	if err != nil {
+		log.Printf("Failed to marshal log entry: %v", err)
+		return
+	}
+	fmt.Println(string(b))
+}
+
+func jsonMarshal(v interface{}) ([]byte, error) {
+	// Use standard json.Marshal but import "encoding/json" here
+	// to avoid import clutter at top, define inline
+	// This is a helper to keep code self-contained.
+	// Alternatively just import encoding/json at top.
+	return json.Marshal(v)
+}
+
+type RateLimitHandler struct {
+	mu sync.Mutex
+}
+
+func (r *RateLimitHandler) HandleRateLimit(resp *github.Response, logger *Logger) {
+	if resp == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	remaining := resp.Rate.Remaining
+	reset := resp.Rate.Reset.Time
+	if remaining == 0 {
+		waitDuration := time.Until(reset)
+		logger.Info("Rate limit reached, sleeping until reset", map[string]interface{}{
+			"reset_time": reset.Format(time.RFC3339),
+			"wait_time":  waitDuration.String(),
+		})
+		time.Sleep(waitDuration)
+	}
+}
+
 func main() {
 	startTime = time.Now()
 
 	fmt.Println("::group::Debug Logs")
+
+	logger := &Logger{}
+	rateLimitHandler := &RateLimitHandler{}
 
 	appID := os.Getenv("APP_ID")
 	installationID := os.Getenv("INSTALLATION_ID")
@@ -68,55 +142,72 @@ func main() {
 		org = "nanasec"
 	}
 	if appID == "" || installationID == "" || privateKeyPEM == "" {
-		log.Fatal("Missing APP_ID, INSTALLATION_ID, or PRIVATE_KEY environment variables")
+		logger.Error("Missing APP_ID, INSTALLATION_ID, or PRIVATE_KEY environment variables", nil)
+		os.Exit(1)
 	}
 
 	key, err := parsePrivateKey(privateKeyPEM)
 	if err != nil {
-		log.Fatalf("Failed to parse private key: %v", err)
+		logger.Error("Failed to parse private key", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
 	}
 
 	jwtToken, err := generateJWT(appID, key)
 	if err != nil {
-		log.Fatalf("Failed to generate JWT: %v", err)
+		logger.Error("Failed to generate JWT", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
 	}
+
+	logger.Info("Starting GitHub branch protection scanner", map[string]interface{}{
+		"app_id":       appID,
+		"organization": org,
+	})
 
 	ctx := context.Background()
 	jwtClient := oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: jwtToken}))
 	client := github.NewClient(jwtClient)
 
-	token, _, err := client.Apps.CreateInstallationToken(ctx, parseInt64(installationID), nil)
+	token, resp, err := client.Apps.CreateInstallationToken(ctx, parseInt64(installationID), nil)
 	if err != nil {
-		log.Fatalf("Failed to create installation token: %v", err)
+		logger.Error("Failed to create installation token", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
 	}
+	rateLimitHandler.HandleRateLimit(resp, logger)
 
 	tc := oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token.GetToken()}))
 	client = github.NewClient(tc)
 
-	repos, _, err := client.Repositories.ListByOrg(ctx, org, &github.RepositoryListByOrgOptions{
+	repos, resp, err := client.Repositories.ListByOrg(ctx, org, &github.RepositoryListByOrgOptions{
 		Type:        "all",
 		ListOptions: github.ListOptions{PerPage: 100},
 	})
 	if err != nil {
-		log.Fatalf("Failed to list repositories: %v", err)
+		logger.Error("Failed to list repositories", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
 	}
+	rateLimitHandler.HandleRateLimit(resp, logger)
 
 	totalRepos = len(repos)
 
-	fmt.Printf("{\"level\":\"INFO\",\"message\":\"Found %d repositories. Starting scan...\",\"organization\":\"%s\",\"service\":\"github-branch-scanner\"}\n", totalRepos, org)
+	logger.Info("Repository discovery complete", map[string]interface{}{
+		"total_repositories": totalRepos,
+		"organization":       org,
+	})
+
 	fmt.Println("::endgroup::") // End Debug Logs
 	fmt.Println("::group::Progress Updates")
+	fmt.Println("Starting GitHub Branch Protection Report Scanner...")
 
 	csvFile, err := os.Create("branch_protection_report.csv")
 	if err != nil {
-		log.Fatalf("Could not create CSV file: %v", err)
+		logger.Error("Could not create CSV file", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
 	}
 	defer csvFile.Close()
 
 	writer := csv.NewWriter(csvFile)
 	defer writer.Flush()
 
-	// CSV headers for report
 	headers := []string{
 		"Repository", "Branch",
 		"Require a Pull Request Before Merging",
@@ -145,7 +236,8 @@ func main() {
 	}
 
 	if err := writer.Write(headers); err != nil {
-		log.Fatalf("Failed to write CSV headers: %v", err)
+		logger.Error("Failed to write CSV headers", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
 	}
 
 	var wg sync.WaitGroup
@@ -160,7 +252,7 @@ func main() {
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			report := processRepository(ctx, client, org, repo)
+			report := processRepository(ctx, client, org, repo, logger, rateLimitHandler)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -171,6 +263,10 @@ func main() {
 			if report != nil {
 				if err := writer.Write(reportToSlice(report)); err != nil {
 					errorMessages = append(errorMessages, fmt.Sprintf("Failed to write report for %s: %v", repo.GetName(), err))
+					logger.Error("Failed to write report for repository", map[string]interface{}{
+						"repository": repo.GetName(),
+						"error":      err.Error(),
+					})
 				} else {
 					if report.RequirePullRequestBeforeMerging != "No" {
 						protected++
@@ -191,7 +287,16 @@ func main() {
 	fmt.Println("::group::Summary")
 
 	elapsed := time.Since(startTime).Seconds()
-	fmt.Println("Scan complete.")
+	logger.Info("Scan complete", map[string]interface{}{
+		"repositories_scanned":        totalRepos,
+		"protected_branches_found":    protected,
+		"unprotected_or_inaccessible": unprotected,
+		"total_time_seconds":          elapsed,
+		"errors_encountered_count":    len(errorMessages),
+		"warnings_encountered_count":  len(warningMessages),
+		"csv_report_file":             "branch_protection_report.csv",
+	})
+
 	fmt.Printf("Repositories scanned: %d\n", totalRepos)
 	fmt.Printf("Protected branches found: %d\n", protected)
 	fmt.Printf("Unprotected or inaccessible branches: %d\n", unprotected)
@@ -215,17 +320,20 @@ func main() {
 	fmt.Println("::endgroup::") // End Summary
 }
 
-func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository) *BranchProtectionReport {
+func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository, logger *Logger, rateLimitHandler *RateLimitHandler) *BranchProtectionReport {
 	repoName := repo.GetName()
 	defaultBranch := repo.GetDefaultBranch()
 	if defaultBranch == "" {
 		defaultBranch = "main"
 	}
 
-	// Detailed log for each repository
-	fmt.Printf("Processing: %s/%s (branch: %s)\n", org, repoName, defaultBranch)
+	logger.Info("Processing repository branch", map[string]interface{}{
+		"repository": repoName,
+		"branch":     defaultBranch,
+	})
 
 	protection, resp, err := client.Repositories.GetBranchProtection(ctx, org, repoName, defaultBranch)
+	rateLimitHandler.HandleRateLimit(resp, logger)
 	if err != nil {
 		if resp != nil && resp.StatusCode == 404 {
 			return &BranchProtectionReport{
@@ -259,6 +367,11 @@ func processRepository(ctx context.Context, client *github.Client, org string, r
 		mu.Lock()
 		errorMessages = append(errorMessages, fmt.Sprintf("Failed to get protection for %s/%s: %v", org, repoName, err))
 		mu.Unlock()
+		logger.Error("Failed to get branch protection", map[string]interface{}{
+			"repository": repoName,
+			"branch":     defaultBranch,
+			"error":      err.Error(),
+		})
 		return nil
 	}
 
