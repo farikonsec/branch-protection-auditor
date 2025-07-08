@@ -183,15 +183,25 @@ func main() {
 	tc := oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token.GetToken()}))
 	client = github.NewClient(tc)
 
-	repos, resp, err := client.Repositories.ListByOrg(ctx, org, &github.RepositoryListByOrgOptions{
+	var repos []*github.Repository
+	opt := &github.RepositoryListByOrgOptions{
 		Type:        "all",
 		ListOptions: github.ListOptions{PerPage: 100},
-	})
-	if err != nil {
-		logger.Error("Failed to list repositories", map[string]interface{}{"error": err.Error()})
-		os.Exit(1)
 	}
-	rateLimitHandler.HandleRateLimit(resp, logger)
+
+	for {
+		batch, resp, err := client.Repositories.ListByOrg(ctx, org, opt)
+		if err != nil {
+			logger.Error("Failed to list repositories", map[string]interface{}{"error": err.Error()})
+			os.Exit(1)
+		}
+		rateLimitHandler.HandleRateLimit(resp, logger)
+		repos = append(repos, batch...)
+		if resp.NextPage == 0 {
+			break
+		}
+		opt.Page = resp.NextPage
+	}
 
 	totalRepos = len(repos)
 
