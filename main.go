@@ -129,7 +129,7 @@ func (r *RateLimitHandler) HandleRateLimit(resp *github.Response, logger *Logger
 func main() {
 	startTime = time.Now()
 
-	fmt.Println("::group::Debug Logs")
+	fmt.Println("::group::Logs")
 
 	logger := &Logger{}
 	rateLimitHandler := &RateLimitHandler{}
@@ -194,8 +194,6 @@ func main() {
 		"organization":       org,
 	})
 
-	fmt.Println("::endgroup::") // End Debug Logs
-	fmt.Println("::group::Progress Updates")
 	fmt.Println("Starting GitHub Branch Protection Report Scanner...")
 
 	csvFile, err := os.Create("branch_protection_report.csv")
@@ -283,7 +281,7 @@ func main() {
 	wg.Wait()
 
 	fmt.Println()               // To ensure newline after progress bar
-	fmt.Println("::endgroup::") // End Progress Updates
+	fmt.Println("::endgroup::") // End Logs
 	fmt.Println("::group::Summary")
 
 	elapsed := time.Since(startTime).Seconds()
