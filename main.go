@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,7 @@ type BranchProtectionReport struct {
 	TeamPushRestrictions            string
 	AllowForcePushes                string
 	AllowDeletions                  string
+	LastActivity                    string
 }
 
 var (
@@ -231,6 +233,7 @@ func main() {
 		"Team Push Restrictions",
 		"Allow Force Pushes",
 		"Allow Deletions",
+		"Last Activity",
 	}
 
 	if err := writer.Write(headers); err != nil {
@@ -238,10 +241,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Sort repos by pushedAt descending
+	sort.Slice(repos, func(i, j int) bool {
+		return repos[i].GetPushedAt().Time.After(repos[j].GetPushedAt().Time)
+	})
+
 	var wg sync.WaitGroup
 	semaphore := make(chan struct{}, 10) // Concurrency limiter
 
 	protected, unprotected := 0, 0
+	activeProtected, activeUnprotected := 0, 0
 
 	for _, repo := range repos {
 		wg.Add(1)
@@ -259,6 +268,8 @@ func main() {
 			showProgress()
 
 			if report != nil {
+				// Set LastActivity field
+				report.LastActivity = repo.GetPushedAt().Time.Format("02 Jan 2006 15:04 MST")
 				if err := writer.Write(reportToSlice(report)); err != nil {
 					errorMessages = append(errorMessages, fmt.Sprintf("Failed to write report for %s: %v", repo.GetName(), err))
 					logger.Error("Failed to write report for repository", map[string]interface{}{
@@ -274,6 +285,17 @@ func main() {
 				}
 			} else {
 				unprotected++
+			}
+
+			// Active repo statistics
+			pushedAt := repo.GetPushedAt().Time
+			isActive := time.Since(pushedAt).Hours() <= 90*24
+			if isActive {
+				if report != nil && report.RequirePullRequestBeforeMerging != "No" {
+					activeProtected++
+				} else {
+					activeUnprotected++
+				}
 			}
 		}(repo)
 	}
@@ -298,6 +320,11 @@ func main() {
 	fmt.Printf("Protected branches found: %d\n", protected)
 	fmt.Printf("Unprotected or inaccessible branches: %d\n", unprotected)
 	fmt.Printf("Total time taken: %.2f seconds\n", elapsed)
+
+	// Active (recent) repo summary
+	fmt.Printf("\nActive Repositories (last 90 days):\n")
+	fmt.Printf("Active protected: %d\n", activeProtected)
+	fmt.Printf("Active unprotected or inaccessible: %d\n", activeUnprotected)
 
 	if len(errorMessages) > 0 {
 		fmt.Printf("\nErrors encountered (%d):\n", len(errorMessages))
@@ -359,6 +386,7 @@ func processRepository(ctx context.Context, client *github.Client, org string, r
 				TeamPushRestrictions:            "None configured",
 				AllowForcePushes:                "No",
 				AllowDeletions:                  "No",
+				LastActivity:                    repo.GetPushedAt().Time.Format("02 Jan 2006 15:04 MST"),
 			}
 		}
 		mu.Lock()
@@ -372,7 +400,9 @@ func processRepository(ctx context.Context, client *github.Client, org string, r
 		return nil
 	}
 
-	return parseProtectionToReport(repoName, defaultBranch, protection)
+	report := parseProtectionToReport(repoName, defaultBranch, protection)
+	report.LastActivity = repo.GetPushedAt().Time.Format("02 Jan 2006 15:04 MST")
+	return report
 }
 
 func parseProtectionToReport(repoName, branch string, protection *github.Protection) *BranchProtectionReport {
@@ -497,6 +527,7 @@ func reportToSlice(r *BranchProtectionReport) []string {
 		r.RequireLinearHistory, r.AllowForkSyncing, r.LockBranch, r.EnforceAdmins,
 		r.RestrictPushes, r.UserPushRestrictions, r.TeamPushRestrictions,
 		r.AllowForcePushes, r.AllowDeletions,
+		r.LastActivity,
 	}
 }
 
