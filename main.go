@@ -58,6 +58,8 @@ var (
 func main() {
 	startTime = time.Now()
 
+	fmt.Println("::group::Debug Logs")
+
 	appID := os.Getenv("APP_ID")
 	installationID := os.Getenv("INSTALLATION_ID")
 	privateKeyPEM := os.Getenv("PRIVATE_KEY")
@@ -101,9 +103,9 @@ func main() {
 
 	totalRepos = len(repos)
 
-	// Start Progress Updates group
-	fmt.Printf("::group::Progress Updates\n")
-	fmt.Printf("Found %d repositories. Starting scan...\n", totalRepos)
+	fmt.Printf("{\"level\":\"INFO\",\"message\":\"Found %d repositories. Starting scan...\",\"organization\":\"%s\",\"service\":\"github-branch-scanner\"}\n", totalRepos, org)
+	fmt.Println("::endgroup::") // End Debug Logs
+	fmt.Println("::group::Progress Updates")
 
 	csvFile, err := os.Create("branch_protection_report.csv")
 	if err != nil {
@@ -151,10 +153,6 @@ func main() {
 
 	protected, unprotected := 0, 0
 
-	// Start Debug Logs group (after Progress Updates for better separation)
-	fmt.Printf("::endgroup::\n") // End Progress Updates group early so logs don't mix
-	fmt.Printf("::group::Debug Logs\n")
-
 	for _, repo := range repos {
 		wg.Add(1)
 		go func(repo *github.Repository) {
@@ -168,10 +166,7 @@ func main() {
 			defer mu.Unlock()
 
 			processedRepos++
-			// Reopen Progress Updates group temporarily to update progress bar cleanly
-			fmt.Printf("::group::Progress Updates\n")
 			showProgress()
-			fmt.Printf("::endgroup::\n")
 
 			if report != nil {
 				if err := writer.Write(reportToSlice(report)); err != nil {
@@ -191,11 +186,9 @@ func main() {
 
 	wg.Wait()
 
-	// End Debug Logs group
-	fmt.Printf("::endgroup::\n") // Close Debug Logs group
-
-	// Start Summary group
-	fmt.Printf("::group::Summary\n")
+	fmt.Println()               // To ensure newline after progress bar
+	fmt.Println("::endgroup::") // End Progress Updates
+	fmt.Println("::group::Summary")
 
 	elapsed := time.Since(startTime).Seconds()
 	fmt.Println("Scan complete.")
@@ -219,8 +212,7 @@ func main() {
 	}
 
 	fmt.Println("CSV report saved as branch_protection_report.csv")
-	// End Summary group
-	fmt.Printf("::endgroup::\n")
+	fmt.Println("::endgroup::") // End Summary
 }
 
 func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository) *BranchProtectionReport {
