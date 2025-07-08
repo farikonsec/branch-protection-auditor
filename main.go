@@ -280,10 +280,7 @@ func main() {
 
 	wg.Wait()
 
-	fmt.Println()               // To ensure newline after progress bar
-	fmt.Println("::endgroup::") // End Logs
-	fmt.Println("::group::Summary")
-
+	fmt.Println() // To ensure newline after progress bar
 	elapsed := time.Since(startTime).Seconds()
 	logger.Info("Scan complete", map[string]interface{}{
 		"repositories_scanned":        totalRepos,
@@ -294,6 +291,8 @@ func main() {
 		"warnings_encountered_count":  len(warningMessages),
 		"csv_report_file":             "branch_protection_report.csv",
 	})
+	fmt.Println("::endgroup::") // End Logs
+	fmt.Println("::group::Summary")
 
 	fmt.Printf("Repositories scanned: %d\n", totalRepos)
 	fmt.Printf("Protected branches found: %d\n", protected)
