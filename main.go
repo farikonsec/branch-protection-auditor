@@ -360,14 +360,15 @@ func main() {
 	fmt.Println("::group::Summary")
 
 	fmt.Printf("Repositories scanned: %d\n", totalRepos)
-	fmt.Printf("Protected branches found: %d\n", protected)
-	fmt.Printf("Unprotected or inaccessible branches: %d\n", unprotected)
+	fmt.Printf("Protected branches found (require PR before merge): %d\n", protected)
+	fmt.Printf("Unprotected or inaccessible branches (no PR rules or API denied): %d\n", unprotected)
 	fmt.Printf("Total time taken: %.2f seconds\n", elapsed)
 
 	// Active (recent) repo summary
-	fmt.Printf("\nActive Repositories (last 90 days):\n")
-	fmt.Printf("Active protected: %d\n", activeProtected)
-	fmt.Printf("Active unprotected or inaccessible: %d\n", activeUnprotected)
+	activeTotal := activeProtected + activeUnprotected
+	fmt.Printf("\nActive Repositories (last 90 days): %d\n", activeTotal)
+	fmt.Printf("Active protected (require PR before merge): %d\n", activeProtected)
+	fmt.Printf("Active unprotected or inaccessible (no PR rules or API denied): %d\n", activeUnprotected)
 
 	// Detailed summary section
 	fmt.Printf("\nDetailed Summary (All Repos):\n")
