@@ -214,12 +214,12 @@ func main() {
 
 	// --- Excelize initialization ---
 	excelFile := excelize.NewFile()
-	// Remove default sheet
-	excelFile.DeleteSheet("Sheet1")
 	allReposSheet := "AllRepos"
 	engSheet := "Engineering"
 	excelFile.NewSheet(allReposSheet)
 	excelFile.NewSheet(engSheet)
+	excelFile.DeleteSheet("Sheet1")
+	excelFile.SetActiveSheet(excelFile.GetSheetIndex(allReposSheet))
 
 	headers := []string{
 		"Repository", "Branch",
