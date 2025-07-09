@@ -273,7 +273,7 @@ func main() {
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
 
-			report := processRepository(ctx, client, org, repo, logger, rateLimitHandler)
+			report := processRepository(ctx, client, org, repo, logger, rateLimitHandler, false)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -478,7 +478,7 @@ func main() {
 	engNoProtection, engNoPRRequired, engOneApproval, engTwoToThreeApprovals, engAllowPushes := 0, 0, 0, 0, 0
 
 	for _, repo := range engineeringReposMap {
-		report := processRepository(ctx, client, org, repo, logger, rateLimitHandler)
+		report := processRepository(ctx, client, org, repo, logger, rateLimitHandler, true)
 
 		if report != nil {
 			if report.RequirePullRequestBeforeMerging != "No" {
@@ -541,17 +541,19 @@ func main() {
 	fmt.Println("::endgroup::")
 }
 
-func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository, logger *Logger, rateLimitHandler *RateLimitHandler) *BranchProtectionReport {
+func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository, logger *Logger, rateLimitHandler *RateLimitHandler, suppressLogs bool) *BranchProtectionReport {
 	repoName := repo.GetName()
 	defaultBranch := repo.GetDefaultBranch()
 	if defaultBranch == "" {
 		defaultBranch = "main"
 	}
 
-	logger.Info("Processing repository branch", map[string]interface{}{
-		"repository": repoName,
-		"branch":     defaultBranch,
-	})
+	if !suppressLogs {
+		logger.Info("Processing repository branch", map[string]interface{}{
+			"repository": repoName,
+			"branch":     defaultBranch,
+		})
+	}
 
 	protection, resp, err := client.Repositories.GetBranchProtection(ctx, org, repoName, defaultBranch)
 	rateLimitHandler.HandleRateLimit(resp, logger)
