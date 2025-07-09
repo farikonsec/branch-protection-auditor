@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rsa"
-	"encoding/csv"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/go-github/v53/github"
+	"github.com/xuri/excelize/v2"
 	"golang.org/x/oauth2"
 )
 
@@ -212,15 +212,14 @@ func main() {
 
 	fmt.Println("Starting GitHub Branch Protection Report Scanner...")
 
-	csvFile, err := os.Create("branch_protection_report.csv")
-	if err != nil {
-		logger.Error("Could not create CSV file", map[string]interface{}{"error": err.Error()})
-		os.Exit(1)
-	}
-	defer csvFile.Close()
-
-	writer := csv.NewWriter(csvFile)
-	defer writer.Flush()
+	// --- Excelize initialization ---
+	excelFile := excelize.NewFile()
+	// Remove default sheet
+	excelFile.DeleteSheet("Sheet1")
+	allReposSheet := "AllRepos"
+	engSheet := "Engineering"
+	excelFile.NewSheet(allReposSheet)
+	excelFile.NewSheet(engSheet)
 
 	headers := []string{
 		"Repository", "Branch",
@@ -249,10 +248,21 @@ func main() {
 		"Allow Deletions",
 		"Last Activity",
 	}
-
-	if err := writer.Write(headers); err != nil {
-		logger.Error("Failed to write CSV headers", map[string]interface{}{"error": err.Error()})
-		os.Exit(1)
+	engHeaders := append(append([]string{}, headers...), "Engineering Teams")
+	// Write headers to both sheets
+	for i, h := range headers {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		excelFile.SetCellValue(allReposSheet, cell, h)
+	}
+	for i, h := range engHeaders {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		excelFile.SetCellValue(engSheet, cell, h)
+	}
+	// Set column width for readability
+	for i := 1; i <= len(engHeaders); i++ {
+		col, _ := excelize.ColumnNumberToName(i)
+		excelFile.SetColWidth(allReposSheet, col, col, 26)
+		excelFile.SetColWidth(engSheet, col, col, 26)
 	}
 
 	// Sort repos by pushedAt descending
@@ -266,9 +276,15 @@ func main() {
 	protected, unprotected := 0, 0
 	activeProtected, activeUnprotected := 0, 0
 
+	// For engineering section: track team names per repo, and branch protection reports for each
+	engRepoTeams := make(map[int64]map[string]struct{}) // repoID -> set of team names
+	engRepoReports := make(map[int64]*BranchProtectionReport)
+
+	// Write all repo reports to AllRepos sheet
+	allReposRow := 2
 	for _, repo := range repos {
 		wg.Add(1)
-		go func(repo *github.Repository) {
+		go func(repo *github.Repository, row int) {
 			defer wg.Done()
 			semaphore <- struct{}{}
 			defer func() { <-semaphore }()
@@ -284,18 +300,15 @@ func main() {
 			if report != nil {
 				// Set LastActivity field
 				report.LastActivity = repo.GetPushedAt().Time.Format("02 Jan 2006 15:04 MST")
-				if err := writer.Write(reportToSlice(report)); err != nil {
-					errorMessages = append(errorMessages, fmt.Sprintf("Failed to write report for %s: %v", repo.GetName(), err))
-					logger.Error("Failed to write report for repository", map[string]interface{}{
-						"repository": repo.GetName(),
-						"error":      err.Error(),
-					})
+				// Write to Excel
+				for i, v := range reportToSlice(report) {
+					cell, _ := excelize.CoordinatesToCellName(i+1, row)
+					excelFile.SetCellValue(allReposSheet, cell, v)
+				}
+				if report.RequirePullRequestBeforeMerging != "No" {
+					protected++
 				} else {
-					if report.RequirePullRequestBeforeMerging != "No" {
-						protected++
-					} else {
-						unprotected++
-					}
+					unprotected++
 				}
 			} else {
 				unprotected++
@@ -350,7 +363,8 @@ func main() {
 					}
 				}
 			}
-		}(repo)
+		}(repo, allReposRow)
+		allReposRow++
 	}
 
 	wg.Wait()
@@ -364,7 +378,7 @@ func main() {
 		"total_time_seconds":          elapsed,
 		"errors_encountered_count":    len(errorMessages),
 		"warnings_encountered_count":  len(warningMessages),
-		"csv_report_file":             "branch_protection_report.csv",
+		"excel_report_file":           "branch_protection_report.xlsx",
 	})
 	fmt.Println("::endgroup::") // End Logs
 	fmt.Println("::group::Summary")
@@ -414,15 +428,13 @@ func main() {
 		}
 	}
 
-	fmt.Println("CSV report saved as branch_protection_report.csv")
+	fmt.Println("Excel report saved as branch_protection_report.xlsx")
 	fmt.Println("::endgroup::") // End Summary
 
 	// --- Engineering Teams Section ---
 	// Step 1: Fetch all teams in the org
-	var engineeringReposMap = map[int64]*github.Repository{}
 	var engineeringTeams []*github.Team
 	teamOpt := &github.ListOptions{PerPage: 100}
-
 	for {
 		teams, resp, err := client.Teams.ListTeams(ctx, org, teamOpt)
 		if err != nil {
@@ -430,21 +442,19 @@ func main() {
 			os.Exit(1)
 		}
 		rateLimitHandler.HandleRateLimit(resp, logger)
-
 		for _, team := range teams {
 			name := strings.ToLower(team.GetName())
 			if strings.Contains(name, "engineering") {
 				engineeringTeams = append(engineeringTeams, team)
 			}
 		}
-
 		if resp.NextPage == 0 {
 			break
 		}
 		teamOpt.Page = resp.NextPage
 	}
-
-	// Step 2: For each engineering team, fetch repos and deduplicate
+	// Step 2: For each engineering team, fetch repos and deduplicate, and track team names per repo
+	engineeringReposMap := map[int64]*github.Repository{}
 	for _, team := range engineeringTeams {
 		repoOpt := &github.ListOptions{PerPage: 100}
 		for {
@@ -457,29 +467,30 @@ func main() {
 				break
 			}
 			rateLimitHandler.HandleRateLimit(resp, logger)
-
 			for _, r := range repoBatch {
 				engineeringReposMap[r.GetID()] = r
+				if engRepoTeams[r.GetID()] == nil {
+					engRepoTeams[r.GetID()] = make(map[string]struct{})
+				}
+				engRepoTeams[r.GetID()][team.GetName()] = struct{}{}
 			}
-
 			if resp.NextPage == 0 {
 				break
 			}
 			repoOpt.Page = resp.NextPage
 		}
 	}
-
-	// Step 3: Process engineering repos
+	// Step 3: Process engineering repos, suppress logs, store report and teams per repo
 	fmt.Println("::group::Engineering Team Summary")
-
 	engTotal := len(engineeringReposMap)
 	engProtected, engUnprotected := 0, 0
 	engActiveProtected, engActiveUnprotected := 0, 0
 	engNoProtection, engNoPRRequired, engOneApproval, engTwoToThreeApprovals, engAllowPushes := 0, 0, 0, 0, 0
-
-	for _, repo := range engineeringReposMap {
+	engRow := 2
+	for repoID, repo := range engineeringReposMap {
 		report := processRepository(ctx, client, org, repo, logger, rateLimitHandler, true)
-
+		engRepoReports[repoID] = report
+		// No logs for suppressed run
 		if report != nil {
 			if report.RequirePullRequestBeforeMerging != "No" {
 				engProtected++
@@ -489,7 +500,6 @@ func main() {
 		} else {
 			engUnprotected++
 		}
-
 		pushedAt := repo.GetPushedAt().Time
 		isActive := time.Since(pushedAt).Hours() <= 90*24
 		if isActive {
@@ -499,7 +509,6 @@ func main() {
 				engActiveUnprotected++
 			}
 		}
-
 		if report != nil {
 			if report.RequirePullRequestBeforeMerging == "No" {
 				engNoProtection++
@@ -519,16 +528,33 @@ func main() {
 			}
 		}
 	}
-
+	// Write engineering repos to Excel
+	for repoID, report := range engRepoReports {
+		if report == nil {
+			continue
+		}
+		values := reportToSlice(report)
+		teamSet := engRepoTeams[repoID]
+		teamList := make([]string, 0, len(teamSet))
+		for t := range teamSet {
+			teamList = append(teamList, t)
+		}
+		sort.Strings(teamList)
+		engTeamsCol := strings.Join(teamList, ", ")
+		values = append(values, engTeamsCol)
+		for i, v := range values {
+			cell, _ := excelize.CoordinatesToCellName(i+1, engRow)
+			excelFile.SetCellValue(engSheet, cell, v)
+		}
+		engRow++
+	}
 	fmt.Printf("Engineering Team Repositories: %d\n", engTotal)
 	fmt.Printf("Protected branches found (require PR before merge): %d\n", engProtected)
 	fmt.Printf("Unprotected or inaccessible branches (no PR rules or API denied): %d\n", engUnprotected)
-
 	engActiveTotal := engActiveProtected + engActiveUnprotected
 	fmt.Printf("Active Repositories (last 90 days): %d\n", engActiveTotal)
 	fmt.Printf("Active protected (require PR before merge): %d\n", engActiveProtected)
 	fmt.Printf("Active unprotected or inaccessible: %d\n", engActiveUnprotected)
-
 	if engTotal > 0 {
 		fmt.Printf("\nDetailed Summary (Engineering Teams):\n")
 		fmt.Printf("- %.1f%% (%d) have no branch protection\n", float64(engNoProtection)/float64(engTotal)*100, engNoProtection)
@@ -537,8 +563,12 @@ func main() {
 		fmt.Printf("- %.1f%% (%d) require 2–3 approvals\n", float64(engTwoToThreeApprovals)/float64(engTotal)*100, engTwoToThreeApprovals)
 		fmt.Printf("- %.1f%% (%d) allow force pushes\n", float64(engAllowPushes)/float64(engTotal)*100, engAllowPushes)
 	}
-
 	fmt.Println("::endgroup::")
+	// Save Excel file
+	if err := excelFile.SaveAs("branch_protection_report.xlsx"); err != nil {
+		logger.Error("Failed to save Excel file", map[string]interface{}{"error": err.Error()})
+		os.Exit(1)
+	}
 }
 
 func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository, logger *Logger, rateLimitHandler *RateLimitHandler, suppressLogs bool) *BranchProtectionReport {
