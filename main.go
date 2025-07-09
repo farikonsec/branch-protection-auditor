@@ -416,6 +416,129 @@ func main() {
 
 	fmt.Println("CSV report saved as branch_protection_report.csv")
 	fmt.Println("::endgroup::") // End Summary
+
+	// --- Engineering Teams Section ---
+	// Step 1: Fetch all teams in the org
+	var engineeringReposMap = map[int64]*github.Repository{}
+	var engineeringTeams []*github.Team
+	teamOpt := &github.ListOptions{PerPage: 100}
+
+	for {
+		teams, resp, err := client.Teams.ListTeams(ctx, org, teamOpt)
+		if err != nil {
+			logger.Error("Failed to list teams", map[string]interface{}{"error": err.Error()})
+			os.Exit(1)
+		}
+		rateLimitHandler.HandleRateLimit(resp, logger)
+
+		for _, team := range teams {
+			name := strings.ToLower(team.GetName())
+			if strings.Contains(name, "engineering") {
+				engineeringTeams = append(engineeringTeams, team)
+			}
+		}
+
+		if resp.NextPage == 0 {
+			break
+		}
+		teamOpt.Page = resp.NextPage
+	}
+
+	// Step 2: For each engineering team, fetch repos and deduplicate
+	for _, team := range engineeringTeams {
+		repoOpt := &github.ListOptions{PerPage: 100}
+		for {
+			repoBatch, resp, err := client.Teams.ListTeamReposByID(ctx, org, team.GetID(), repoOpt)
+			if err != nil {
+				logger.Error("Failed to list repos for team", map[string]interface{}{
+					"team":  team.GetSlug(),
+					"error": err.Error(),
+				})
+				break
+			}
+			rateLimitHandler.HandleRateLimit(resp, logger)
+
+			for _, r := range repoBatch {
+				engineeringReposMap[r.GetID()] = r
+			}
+
+			if resp.NextPage == 0 {
+				break
+			}
+			repoOpt.Page = resp.NextPage
+		}
+	}
+
+	// Step 3: Process engineering repos
+	fmt.Println("::group::Engineering Team Summary")
+
+	engTotal := len(engineeringReposMap)
+	engProtected, engUnprotected := 0, 0
+	engActiveProtected, engActiveUnprotected := 0, 0
+	engNoProtection, engNoPRRequired, engOneApproval, engTwoToThreeApprovals, engAllowPushes := 0, 0, 0, 0, 0
+
+	for _, repo := range engineeringReposMap {
+		report := processRepository(ctx, client, org, repo, logger, rateLimitHandler)
+
+		if report != nil {
+			if report.RequirePullRequestBeforeMerging != "No" {
+				engProtected++
+			} else {
+				engUnprotected++
+			}
+		} else {
+			engUnprotected++
+		}
+
+		pushedAt := repo.GetPushedAt().Time
+		isActive := time.Since(pushedAt).Hours() <= 90*24
+		if isActive {
+			if report != nil && report.RequirePullRequestBeforeMerging != "No" {
+				engActiveProtected++
+			} else {
+				engActiveUnprotected++
+			}
+		}
+
+		if report != nil {
+			if report.RequirePullRequestBeforeMerging == "No" {
+				engNoProtection++
+			}
+			if report.RequireApprovals == "No" {
+				engNoPRRequired++
+			}
+			if n, err := strconv.Atoi(report.RequiredNumberOfApprovals); err == nil {
+				if n == 1 {
+					engOneApproval++
+				} else if n >= 2 && n <= 3 {
+					engTwoToThreeApprovals++
+				}
+			}
+			if report.AllowForcePushes == "Yes" {
+				engAllowPushes++
+			}
+		}
+	}
+
+	fmt.Printf("Engineering Team Repositories: %d\n", engTotal)
+	fmt.Printf("Protected branches found (require PR before merge): %d\n", engProtected)
+	fmt.Printf("Unprotected or inaccessible branches (no PR rules or API denied): %d\n", engUnprotected)
+
+	engActiveTotal := engActiveProtected + engActiveUnprotected
+	fmt.Printf("Active Repositories (last 90 days): %d\n", engActiveTotal)
+	fmt.Printf("Active protected (require PR before merge): %d\n", engActiveProtected)
+	fmt.Printf("Active unprotected or inaccessible: %d\n", engActiveUnprotected)
+
+	if engTotal > 0 {
+		fmt.Printf("\nDetailed Summary (Engineering Teams):\n")
+		fmt.Printf("- %.1f%% (%d) have no branch protection\n", float64(engNoProtection)/float64(engTotal)*100, engNoProtection)
+		fmt.Printf("- %.1f%% (%d) don’t require PR reviews before merging\n", float64(engNoPRRequired)/float64(engTotal)*100, engNoPRRequired)
+		fmt.Printf("- %.1f%% (%d) require exactly 1 approval\n", float64(engOneApproval)/float64(engTotal)*100, engOneApproval)
+		fmt.Printf("- %.1f%% (%d) require 2–3 approvals\n", float64(engTwoToThreeApprovals)/float64(engTotal)*100, engTwoToThreeApprovals)
+		fmt.Printf("- %.1f%% (%d) allow force pushes\n", float64(engAllowPushes)/float64(engTotal)*100, engAllowPushes)
+	}
+
+	fmt.Println("::endgroup::")
 }
 
 func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository, logger *Logger, rateLimitHandler *RateLimitHandler) *BranchProtectionReport {
