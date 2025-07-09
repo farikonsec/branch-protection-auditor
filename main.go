@@ -448,7 +448,7 @@ func main() {
 	for _, team := range engineeringTeams {
 		repoOpt := &github.ListOptions{PerPage: 100}
 		for {
-			repoBatch, resp, err := client.Teams.ListTeamReposByID(ctx, org, team.GetID(), repoOpt)
+			repoBatch, resp, err := client.Teams.ListTeamReposByID(ctx, team.GetID(), repoOpt)
 			if err != nil {
 				logger.Error("Failed to list repos for team", map[string]interface{}{
 					"team":  team.GetSlug(),
