@@ -219,7 +219,9 @@ func main() {
 	excelFile.NewSheet(allReposSheet)
 	excelFile.NewSheet(engSheet)
 	excelFile.DeleteSheet("Sheet1")
-	excelFile.SetActiveSheet(excelFile.GetSheetIndex(allReposSheet))
+	if idx, err := excelFile.GetSheetIndex(allReposSheet); err == nil {
+		excelFile.SetActiveSheet(idx)
+	}
 
 	headers := []string{
 		"Repository", "Branch",
