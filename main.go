@@ -447,8 +447,9 @@ func main() {
 	// Step 2: For each engineering team, fetch repos and deduplicate
 	for _, team := range engineeringTeams {
 		repoOpt := &github.ListOptions{PerPage: 100}
+		orgID := team.GetOrganization().GetID()
 		for {
-			repoBatch, resp, err := client.Teams.ListTeamReposByID(ctx, team.GetID(), repoOpt)
+			repoBatch, resp, err := client.Teams.ListTeamReposByID(ctx, orgID, team.GetID(), repoOpt)
 			if err != nil {
 				logger.Error("Failed to list repos for team", map[string]interface{}{
 					"team":  team.GetSlug(),
