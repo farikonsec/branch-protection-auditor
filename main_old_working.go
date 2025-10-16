@@ -7,9 +7,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
-	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -49,14 +47,6 @@ type BranchProtectionReport struct {
 	AllowForcePushes                string
 	AllowDeletions                  string
 	LastActivity                    string
-
-	// New columns (rulesets & effective values)
-	ProtectionSource            string // Classic Branch Protection | Ruleset | Both | None
-	RulesetEnforcement          string // Active | Evaluate | Disabled | None | Inaccessible
-	RulesetNames                string // comma-separated names that target default branch
-	EffectivePRRequired         string // Yes | No | Evaluate
-	EffectiveApprovalsRequired  string // numeric string or "Evaluate <n>" or "0"
-	EffectiveForcePushesBlocked string // Yes | No | Evaluate
 }
 
 var (
@@ -67,13 +57,9 @@ var (
 	warningMessages []string
 	mu              sync.Mutex
 
-	// Detailed counters (all repos)
+	// New counters for detailed summary
 	noProtection, noPRRequired, oneApproval, twoToThreeApprovals, allowPushes                               int
 	activeNoProtection, activeNoPRRequired, activeOneApproval, activeTwoToThreeApprovals, activeAllowPushes int
-
-	// New counters by source
-	protectedClassic, protectedRuleset, protectedBoth, evaluateOnly                         int
-	activeProtectedClassic, activeProtectedRuleset, activeProtectedBoth, activeEvaluateOnly int
 )
 
 type Logger struct {
@@ -117,6 +103,10 @@ func (l *Logger) Error(message string, fields map[string]interface{}) {
 }
 
 func jsonMarshal(v interface{}) ([]byte, error) {
+	// Use standard json.Marshal but import "encoding/json" here
+	// to avoid import clutter at top, define inline
+	// This is a helper to keep code self-contained.
+	// Alternatively just import encoding/json at top.
 	return json.Marshal(v)
 }
 
@@ -142,51 +132,9 @@ func (r *RateLimitHandler) HandleRateLimit(resp *github.Response, logger *Logger
 	}
 }
 
-// -------------- Ruleset minimal types + helpers ---------------
-
-type ruleset struct {
-	Name         string            `json:"name"`
-	Enforcement  string            `json:"enforcement"`      // "active" | "evaluate" | "disabled"
-	Targets      []rulesetTarget   `json:"target,omitempty"` // Some responses use "target", others "environments"/conditions; we handle conditions below
-	BypassActors []json.RawMessage `json:"bypass_actors,omitempty"`
-	Rules        []rulesetRule     `json:"rules"`
-	// Modern API uses "conditions.ref_name" with include/exclude
-	Conditions *rulesetConditions `json:"conditions,omitempty"`
-}
-
-type rulesetConditions struct {
-	RefName *struct {
-		Include []string `json:"include"`
-		Exclude []string `json:"exclude"`
-	} `json:"ref_name,omitempty"`
-}
-
-type rulesetTarget struct {
-	// Kept for completeness; most modern responses describe targets in conditions.ref_name
-	Pattern string `json:"pattern,omitempty"`
-}
-
-type rulesetRule struct {
-	Type       string                 `json:"type"`       // e.g., "pull_request", "required_status_checks", "non_fast_forward", "signed_commits"
-	Parameters map[string]interface{} `json:"parameters"` // rule-specific values (we check for min approvals, etc.)
-}
-
-type effectiveRules struct {
-	HasPRRequiredActive bool
-	ApprovalsActive     int
-	ForceBlockedActive  *bool // nil = unknown
-
-	HasPRRequiredEvaluate bool
-	ApprovalsEvaluate     int
-	ForceBlockedEvaluate  *bool
-
-	EnforcementLabel string   // Active | Evaluate | Disabled | None | Inaccessible (rollup)
-	Names            []string // ruleset names that target default branch and are Active/Evaluate
-	Source           string   // Classic Branch Protection | Ruleset | Both | None
-}
-
 func main() {
 	startTime = time.Now()
+
 	fmt.Println("::group::Logs")
 
 	logger := &Logger{}
@@ -235,12 +183,12 @@ func main() {
 	tc := oauth2.NewClient(ctx, oauth2.StaticTokenSource(&oauth2.Token{AccessToken: token.GetToken()}))
 	client = github.NewClient(tc)
 
-	// Discover all repos with pagination
 	var repos []*github.Repository
 	opt := &github.RepositoryListByOrgOptions{
 		Type:        "all",
 		ListOptions: github.ListOptions{PerPage: 100},
 	}
+
 	for {
 		batch, resp, err := client.Repositories.ListByOrg(ctx, org, opt)
 		if err != nil {
@@ -254,7 +202,9 @@ func main() {
 		}
 		opt.Page = resp.NextPage
 	}
+
 	totalRepos = len(repos)
+
 	logger.Info("Repository discovery complete", map[string]interface{}{
 		"total_repositories": totalRepos,
 		"organization":       org,
@@ -262,7 +212,7 @@ func main() {
 
 	fmt.Println("Starting GitHub Branch Protection Report Scanner...")
 
-	// --- Excel ---
+	// --- Excelize initialization ---
 	excelFile := excelize.NewFile()
 	allReposSheet := "AllRepos"
 	engSheet := "Engineering"
@@ -299,16 +249,9 @@ func main() {
 		"Allow Force Pushes",
 		"Allow Deletions",
 		"Last Activity",
-		// New columns:
-		"Protection Source",
-		"Ruleset Enforcement",
-		"Ruleset Names",
-		"Effective PR Required",
-		"Effective Approvals Required",
-		"Effective Force Pushes Blocked",
 	}
 	engHeaders := append(append([]string{}, headers...), "Engineering Teams")
-
+	// Write headers to both sheets
 	for i, h := range headers {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		excelFile.SetCellValue(allReposSheet, cell, h)
@@ -317,38 +260,29 @@ func main() {
 		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
 		excelFile.SetCellValue(engSheet, cell, h)
 	}
+	// Set column width for readability
 	for i := 1; i <= len(engHeaders); i++ {
 		col, _ := excelize.ColumnNumberToName(i)
 		excelFile.SetColWidth(allReposSheet, col, col, 26)
 		excelFile.SetColWidth(engSheet, col, col, 26)
 	}
 
-	// Sort by activity
+	// Sort repos by pushedAt descending
 	sort.Slice(repos, func(i, j int) bool {
 		return repos[i].GetPushedAt().Time.After(repos[j].GetPushedAt().Time)
 	})
 
 	var wg sync.WaitGroup
-	semaphore := make(chan struct{}, 10)
+	semaphore := make(chan struct{}, 10) // Concurrency limiter
 
 	protected, unprotected := 0, 0
 	activeProtected, activeUnprotected := 0, 0
 
-	// source breakdown
-	protectedClassic = 0
-	protectedRuleset = 0
-	protectedBoth = 0
-	evaluateOnly = 0
-
-	activeProtectedClassic = 0
-	activeProtectedRuleset = 0
-	activeProtectedBoth = 0
-	activeEvaluateOnly = 0
-
-	// Engineering tracking maps
-	engRepoTeams := make(map[int64]map[string]struct{})
+	// For engineering section: track team names per repo, and branch protection reports for each
+	engRepoTeams := make(map[int64]map[string]struct{}) // repoID -> set of team names
 	engRepoReports := make(map[int64]*BranchProtectionReport)
 
+	// Write all repo reports to AllRepos sheet
 	allReposRow := 2
 	for _, repo := range repos {
 		wg.Add(1)
@@ -359,83 +293,57 @@ func main() {
 
 			report := processRepository(ctx, client, org, repo, logger, rateLimitHandler, false)
 
-			// Merge with rulesets to compute effective values and attribution
-			mergeRulesetsIntoReport(ctx, client, org, repo, logger, rateLimitHandler, report)
-
 			mu.Lock()
 			defer mu.Unlock()
 
 			processedRepos++
 			showProgress()
 
-			// Write to Excel
 			if report != nil {
+				// Set LastActivity field
 				report.LastActivity = repo.GetPushedAt().Time.Format("02 Jan 2006 15:04 MST")
-				values := reportToSlice(report)
-				for i, v := range values {
+				// Write to Excel
+				for i, v := range reportToSlice(report) {
 					cell, _ := excelize.CoordinatesToCellName(i+1, row)
 					excelFile.SetCellValue(allReposSheet, cell, v)
 				}
-			}
-
-			// Protected classification uses EFFECTIVE PR required (Active)
-			isProtected, viaClassic, viaRuleset, viaBoth, isEvaluateOnly := classifyProtection(report)
-
-			if isProtected {
-				protected++
-				switch {
-				case viaBoth:
-					protectedBoth++
-				case viaClassic:
-					protectedClassic++
-				case viaRuleset:
-					protectedRuleset++
-				}
-			} else {
-				if isEvaluateOnly {
-					evaluateOnly++
+				if report.RequirePullRequestBeforeMerging != "No" {
+					protected++
 				} else {
 					unprotected++
 				}
+			} else {
+				unprotected++
 			}
 
-			// Active repo stats
+			// Active repo statistics
 			pushedAt := repo.GetPushedAt().Time
 			isActive := time.Since(pushedAt).Hours() <= 90*24
 			if isActive {
-				if isProtected {
+				if report != nil && report.RequirePullRequestBeforeMerging != "No" {
 					activeProtected++
-					switch {
-					case viaBoth:
-						activeProtectedBoth++
-					case viaClassic:
-						activeProtectedClassic++
-					case viaRuleset:
-						activeProtectedRuleset++
-					}
 				} else {
-					if isEvaluateOnly {
-						activeEvaluateOnly++
-					} else {
-						activeUnprotected++
-					}
+					activeUnprotected++
 				}
 			}
 
-			// Detailed breakdown (classic only metrics preserved for continuity)
+			// Detailed summary counters
 			if report != nil {
+				// No branch protection
 				if report.RequirePullRequestBeforeMerging == "No" {
 					noProtection++
 					if isActive {
 						activeNoProtection++
 					}
 				}
+				// No PR required
 				if report.RequireApprovals == "No" {
 					noPRRequired++
 					if isActive {
 						activeNoPRRequired++
 					}
 				}
+				// Number of approvals
 				if n, err := strconv.Atoi(report.RequiredNumberOfApprovals); err == nil {
 					if n == 1 {
 						oneApproval++
@@ -449,6 +357,7 @@ func main() {
 						}
 					}
 				}
+				// Allow force pushes
 				if report.AllowForcePushes == "Yes" {
 					allowPushes++
 					if isActive {
@@ -462,49 +371,32 @@ func main() {
 
 	wg.Wait()
 
-	fmt.Println()
+	fmt.Println() // To ensure newline after progress bar
 	elapsed := time.Since(startTime).Seconds()
 	logger.Info("Scan complete", map[string]interface{}{
 		"repositories_scanned":        totalRepos,
 		"protected_branches_found":    protected,
 		"unprotected_or_inaccessible": unprotected,
-		"evaluate_only":               evaluateOnly,
-		"classic_protected":           protectedClassic,
-		"ruleset_protected":           protectedRuleset,
-		"both_protected":              protectedBoth,
 		"total_time_seconds":          elapsed,
 		"errors_encountered_count":    len(errorMessages),
 		"warnings_encountered_count":  len(warningMessages),
 		"excel_report_file":           "branch_protection_report.xlsx",
 	})
-	fmt.Println("::endgroup::")
+	fmt.Println("::endgroup::") // End Logs
 	fmt.Println("::group::Summary")
 
-	// Console summary
 	fmt.Printf("Repositories scanned: %d\n", totalRepos)
 	fmt.Printf("Protected branches found (require PR before merge): %d\n", protected)
-	fmt.Printf("   ├── %d via Classic Branch Protection\n", protectedClassic)
-	fmt.Printf("   └── %d via Rulesets (Active enforcement)\n", protectedRuleset)
-	if protectedBoth > 0 {
-		fmt.Printf("   (of which %d are protected by BOTH classic and rulesets; stricter applied)\n", protectedBoth)
-	}
-	fmt.Printf("Evaluation-only rulesets (require PR but not enforced): %d\n", evaluateOnly)
 	fmt.Printf("Unprotected or inaccessible branches (no PR rules or API denied): %d\n", unprotected)
 	fmt.Printf("Total time taken: %.2f seconds\n", elapsed)
 
-	// Active subset
-	activeTotal := activeProtected + activeUnprotected + activeEvaluateOnly
+	// Active (recent) repo summary
+	activeTotal := activeProtected + activeUnprotected
 	fmt.Printf("\nActive Repositories (last 90 days): %d\n", activeTotal)
 	fmt.Printf("Active protected (require PR before merge): %d\n", activeProtected)
-	fmt.Printf("   ├── %d via Classic Branch Protection\n", activeProtectedClassic)
-	fmt.Printf("   └── %d via Rulesets (Active enforcement)\n", activeProtectedRuleset)
-	if activeProtectedBoth > 0 {
-		fmt.Printf("   (of which %d are protected by BOTH classic and rulesets; stricter applied)\n", activeProtectedBoth)
-	}
-	fmt.Printf("Active evaluation-only (rulesets in evaluate mode): %d\n", activeEvaluateOnly)
 	fmt.Printf("Active unprotected or inaccessible (no PR rules or API denied): %d\n", activeUnprotected)
 
-	// Detailed summary (classic-oriented for continuity)
+	// Detailed summary section
 	fmt.Printf("\nDetailed Summary (All Repos):\n")
 	if totalRepos > 0 {
 		fmt.Printf("- %.1f%% (%d) have no branch protection\n", float64(noProtection)/float64(totalRepos)*100, noProtection)
@@ -514,7 +406,7 @@ func main() {
 		fmt.Printf("- %.1f%% (%d) allow force pushes\n", float64(allowPushes)/float64(totalRepos)*100, allowPushes)
 	}
 
-	activeTotal = activeProtected + activeUnprotected + activeEvaluateOnly
+	activeTotal = activeProtected + activeUnprotected
 	if activeTotal > 0 {
 		fmt.Printf("\nDetailed Summary (Active Repos Only):\n")
 		fmt.Printf("- %.1f%% (%d) have no branch protection\n", float64(activeNoProtection)/float64(activeTotal)*100, activeNoProtection)
@@ -530,16 +422,19 @@ func main() {
 			fmt.Printf("  - %s\n", msg)
 		}
 	}
+
 	if len(warningMessages) > 0 {
 		fmt.Printf("\nWarnings (%d):\n", len(warningMessages))
 		for _, msg := range warningMessages {
 			fmt.Printf("  - %s\n", msg)
 		}
 	}
-	fmt.Println("Excel report saved as branch_protection_report.xlsx")
-	fmt.Println("::endgroup::")
 
-	// --- Engineering Teams Section (unchanged logic, logs suppressed) ---
+	fmt.Println("Excel report saved as branch_protection_report.xlsx")
+	fmt.Println("::endgroup::") // End Summary
+
+	// --- Engineering Teams Section ---
+	// Step 1: Fetch all teams in the org
 	var engineeringTeams []*github.Team
 	teamOpt := &github.ListOptions{PerPage: 100}
 	for {
@@ -560,7 +455,7 @@ func main() {
 		}
 		teamOpt.Page = resp.NextPage
 	}
-
+	// Step 2: For each engineering team, fetch repos and deduplicate, and track team names per repo
 	engineeringReposMap := map[int64]*github.Repository{}
 	for _, team := range engineeringTeams {
 		repoOpt := &github.ListOptions{PerPage: 100}
@@ -587,49 +482,55 @@ func main() {
 			repoOpt.Page = resp.NextPage
 		}
 	}
-
+	// Step 3: Process engineering repos, suppress logs, store report and teams per repo
 	fmt.Println("::group::Engineering Team Summary")
 	engTotal := len(engineeringReposMap)
 	engProtected, engUnprotected := 0, 0
 	engActiveProtected, engActiveUnprotected := 0, 0
-	engEvalOnly := 0
+	engNoProtection, engNoPRRequired, engOneApproval, engTwoToThreeApprovals, engAllowPushes := 0, 0, 0, 0, 0
 	engRow := 2
-
 	for repoID, repo := range engineeringReposMap {
-		// Process w/ logs suppressed
 		report := processRepository(ctx, client, org, repo, logger, rateLimitHandler, true)
-		mergeRulesetsIntoReport(ctx, client, org, repo, logger, rateLimitHandler, report)
 		engRepoReports[repoID] = report
-
-		isProtected, viaClassic, viaRuleset, viaBoth, isEvaluateOnly := classifyProtection(report)
-		if isProtected {
-			engProtected++
-		} else {
-			if isEvaluateOnly {
-				engEvalOnly++
+		// No logs for suppressed run
+		if report != nil {
+			if report.RequirePullRequestBeforeMerging != "No" {
+				engProtected++
 			} else {
 				engUnprotected++
 			}
+		} else {
+			engUnprotected++
 		}
-
 		pushedAt := repo.GetPushedAt().Time
 		isActive := time.Since(pushedAt).Hours() <= 90*24
 		if isActive {
-			if isProtected {
+			if report != nil && report.RequirePullRequestBeforeMerging != "No" {
 				engActiveProtected++
-				_ = viaClassic
-				_ = viaRuleset
-				_ = viaBoth
 			} else {
-				if isEvaluateOnly {
-					// Track but keep console wording simple
-				}
 				engActiveUnprotected++
 			}
 		}
+		if report != nil {
+			if report.RequirePullRequestBeforeMerging == "No" {
+				engNoProtection++
+			}
+			if report.RequireApprovals == "No" {
+				engNoPRRequired++
+			}
+			if n, err := strconv.Atoi(report.RequiredNumberOfApprovals); err == nil {
+				if n == 1 {
+					engOneApproval++
+				} else if n >= 2 && n <= 3 {
+					engTwoToThreeApprovals++
+				}
+			}
+			if report.AllowForcePushes == "Yes" {
+				engAllowPushes++
+			}
+		}
 	}
-
-	// Write Engineering sheet
+	// Write engineering repos to Excel
 	for repoID, report := range engRepoReports {
 		if report == nil {
 			continue
@@ -641,14 +542,14 @@ func main() {
 			teamList = append(teamList, t)
 		}
 		sort.Strings(teamList)
-		values = append(values, strings.Join(teamList, ", "))
+		engTeamsCol := strings.Join(teamList, ", ")
+		values = append(values, engTeamsCol)
 		for i, v := range values {
 			cell, _ := excelize.CoordinatesToCellName(i+1, engRow)
 			excelFile.SetCellValue(engSheet, cell, v)
 		}
 		engRow++
 	}
-
 	fmt.Printf("Engineering Team Repositories: %d\n", engTotal)
 	fmt.Printf("Protected branches found (require PR before merge): %d\n", engProtected)
 	fmt.Printf("Unprotected or inaccessible branches (no PR rules or API denied): %d\n", engUnprotected)
@@ -658,18 +559,19 @@ func main() {
 	fmt.Printf("Active unprotected or inaccessible: %d\n", engActiveUnprotected)
 	if engTotal > 0 {
 		fmt.Printf("\nDetailed Summary (Engineering Teams):\n")
-		// We keep the same classic-oriented detail lines for continuity.
-		// (Optional: could compute effective-only breakdowns here as a future enhancement.)
+		fmt.Printf("- %.1f%% (%d) have no branch protection\n", float64(engNoProtection)/float64(engTotal)*100, engNoProtection)
+		fmt.Printf("- %.1f%% (%d) don’t require PR reviews before merging\n", float64(engNoPRRequired)/float64(engTotal)*100, engNoPRRequired)
+		fmt.Printf("- %.1f%% (%d) require exactly 1 approval\n", float64(engOneApproval)/float64(engTotal)*100, engOneApproval)
+		fmt.Printf("- %.1f%% (%d) require 2–3 approvals\n", float64(engTwoToThreeApprovals)/float64(engTotal)*100, engTwoToThreeApprovals)
+		fmt.Printf("- %.1f%% (%d) allow force pushes\n", float64(engAllowPushes)/float64(engTotal)*100, engAllowPushes)
 	}
-
 	fmt.Println("::endgroup::")
+	// Save Excel file
 	if err := excelFile.SaveAs("branch_protection_report.xlsx"); err != nil {
 		logger.Error("Failed to save Excel file", map[string]interface{}{"error": err.Error()})
 		os.Exit(1)
 	}
 }
-
-// -------- Repo processing (classic) --------
 
 func processRepository(ctx context.Context, client *github.Client, org string, repo *github.Repository, logger *Logger, rateLimitHandler *RateLimitHandler, suppressLogs bool) *BranchProtectionReport {
 	repoName := repo.GetName()
@@ -716,72 +618,23 @@ func processRepository(ctx context.Context, client *github.Client, org string, r
 				AllowForcePushes:                "No",
 				AllowDeletions:                  "No",
 				LastActivity:                    repo.GetPushedAt().Time.Format("02 Jan 2006 15:04 MST"),
-				// Defaults for new fields; will be filled by ruleset merge
-				ProtectionSource:            "None",
-				RulesetEnforcement:          "None",
-				RulesetNames:                "",
-				EffectivePRRequired:         "No",
-				EffectiveApprovalsRequired:  "0",
-				EffectiveForcePushesBlocked: "No",
 			}
 		}
 		mu.Lock()
 		errorMessages = append(errorMessages, fmt.Sprintf("Failed to get protection for %s/%s: %v", org, repoName, err))
 		mu.Unlock()
-		return &BranchProtectionReport{
-			Repository:                      repoName,
-			Branch:                          defaultBranch,
-			RequirePullRequestBeforeMerging: "No",
-			RequireApprovals:                "No",
-			RequiredNumberOfApprovals:       "0",
-			DismissStaleReviews:             "No",
-			RequireCodeOwnerReviews:         "No",
-			RestrictWhoCanDismissReviews:    "None configured",
-			TeamsOrAppsCanDismissReviews:    "None configured",
-			BypassAllowanceUsers:            "None configured",
-			BypassAllowanceTeams:            "None configured",
-			RequireApprovalOfMostRecentPush: "No",
-			RequiredStatusChecks:            "None configured",
-			StatusChecksStrict:              "No",
-			RequiredConversationResolution:  "No",
-			RequireSignedCommits:            "No",
-			RequireLinearHistory:            "No",
-			AllowForkSyncing:                "No",
-			LockBranch:                      "No",
-			EnforceAdmins:                   "No",
-			RestrictPushes:                  "No",
-			UserPushRestrictions:            "None configured",
-			TeamPushRestrictions:            "None configured",
-			AllowForcePushes:                "No",
-			AllowDeletions:                  "No",
-			LastActivity:                    repo.GetPushedAt().Time.Format("02 Jan 2006 15:04 MST"),
-			ProtectionSource:                "None",
-			RulesetEnforcement:              "Inaccessible",
-			RulesetNames:                    "",
-			EffectivePRRequired:             "No",
-			EffectiveApprovalsRequired:      "0",
-			EffectiveForcePushesBlocked:     "No",
-		}
+		logger.Error("Failed to get branch protection", map[string]interface{}{
+			"repository": repoName,
+			"branch":     defaultBranch,
+			"error":      err.Error(),
+		})
+		return nil
 	}
 
 	report := parseProtectionToReport(repoName, defaultBranch, protection)
 	report.LastActivity = repo.GetPushedAt().Time.Format("02 Jan 2006 15:04 MST")
-	// Initialize new fields; will be overwritten by ruleset merge
-	report.ProtectionSource = "Classic Branch Protection"
-	report.RulesetEnforcement = "None"
-	report.RulesetNames = ""
-	// Effective initially mirrors classic values
-	report.EffectivePRRequired = report.RequirePullRequestBeforeMerging
-	report.EffectiveApprovalsRequired = report.RequiredNumberOfApprovals
-	if report.AllowForcePushes == "Yes" {
-		report.EffectiveForcePushesBlocked = "No"
-	} else {
-		report.EffectiveForcePushesBlocked = "Yes"
-	}
 	return report
 }
-
-// -------- Classic protection parser (unchanged) --------
 
 func parseProtectionToReport(repoName, branch string, protection *github.Protection) *BranchProtectionReport {
 	report := &BranchProtectionReport{Repository: repoName, Branch: branch}
@@ -839,27 +692,33 @@ func parseProtectionToReport(repoName, branch string, protection *github.Protect
 	} else {
 		report.EnforceAdmins = "No"
 	}
+
 	if protection.RequiredSignatures != nil && protection.RequiredSignatures.Enabled != nil {
 		report.RequireSignedCommits = boolToYesNo(*protection.RequiredSignatures.Enabled)
 	} else {
 		report.RequireSignedCommits = "No"
 	}
+
 	report.RequireLinearHistory = "No"
+
 	if protection.AllowForkSyncing != nil && protection.AllowForkSyncing.Enabled != nil {
 		report.AllowForkSyncing = boolToYesNo(*protection.AllowForkSyncing.Enabled)
 	} else {
 		report.AllowForkSyncing = "No"
 	}
+
 	if protection.LockBranch != nil && protection.LockBranch.Enabled != nil {
 		report.LockBranch = boolToYesNo(*protection.LockBranch.Enabled)
 	} else {
 		report.LockBranch = "No"
 	}
+
 	if protection.BlockCreations != nil && protection.BlockCreations.Enabled != nil {
 		report.RestrictPushes = boolToYesNo(*protection.BlockCreations.Enabled)
 	} else {
 		report.RestrictPushes = "No"
 	}
+
 	if protection.Restrictions != nil {
 		report.UserPushRestrictions = formatUsers(protection.Restrictions.Users)
 		report.TeamPushRestrictions = formatTeams(protection.Restrictions.Teams)
@@ -867,346 +726,27 @@ func parseProtectionToReport(repoName, branch string, protection *github.Protect
 		report.UserPushRestrictions = "None configured"
 		report.TeamPushRestrictions = "None configured"
 	}
+
 	if protection.AllowForcePushes != nil {
 		report.AllowForcePushes = boolToYesNo(protection.AllowForcePushes.Enabled)
 	} else {
 		report.AllowForcePushes = "No"
 	}
+
 	if protection.AllowDeletions != nil {
 		report.AllowDeletions = boolToYesNo(protection.AllowDeletions.Enabled)
 	} else {
 		report.AllowDeletions = "No"
 	}
+
 	if protection.RequiredConversationResolution != nil {
 		report.RequiredConversationResolution = boolToYesNo(protection.RequiredConversationResolution.Enabled)
 	} else {
 		report.RequiredConversationResolution = "No"
 	}
+
 	return report
 }
-
-// -------- Ruleset merge logic --------
-
-func mergeRulesetsIntoReport(ctx context.Context, client *github.Client, org string, repo *github.Repository, logger *Logger, rl *RateLimitHandler, report *BranchProtectionReport) {
-	if report == nil {
-		return
-	}
-	repoName := repo.GetName()
-	defaultBranch := report.Branch
-
-	rs, inaccessible, err := fetchRepoRulesets(ctx, client, org, repoName, rl, logger)
-	if err != nil {
-		mu.Lock()
-		errorMessages = append(errorMessages, fmt.Sprintf("Failed to get rulesets for %s/%s: %v", org, repoName, err))
-		mu.Unlock()
-		if inaccessible {
-			// Mark as inaccessible but leave classic-derived values
-			if report.RulesetEnforcement == "" || report.RulesetEnforcement == "None" {
-				report.RulesetEnforcement = "Inaccessible"
-			}
-		}
-		// Don't return; still try to classify with classic
-	}
-
-	eff := computeEffectiveFromRulesets(rs, defaultBranch)
-
-	// Aggregate names
-	report.RulesetNames = strings.Join(eff.Names, ", ")
-
-	// Determine enforcement label preference
-	if eff.EnforcementLabel != "" {
-		report.RulesetEnforcement = normalizeEnforcementLabel(eff.EnforcementLabel)
-	} else if report.RulesetEnforcement == "" {
-		report.RulesetEnforcement = "None"
-	}
-
-	// Protection source attribution
-	classicPR := (report.RequirePullRequestBeforeMerging == "Yes")
-	rulesetPRActive := eff.HasPRRequiredActive
-	switch {
-	case classicPR && rulesetPRActive:
-		report.ProtectionSource = "Both"
-	case rulesetPRActive:
-		report.ProtectionSource = "Ruleset"
-	case classicPR:
-		// keep "Classic Branch Protection" if already set
-		if report.ProtectionSource == "" {
-			report.ProtectionSource = "Classic Branch Protection"
-		}
-	default:
-		if report.ProtectionSource == "" {
-			report.ProtectionSource = "None"
-		}
-	}
-
-	// Effective PR required: prefer Active ruleset; else classic; else Evaluate-only marker
-	if eff.HasPRRequiredActive {
-		report.EffectivePRRequired = "Yes"
-	} else if classicPR {
-		report.EffectivePRRequired = "Yes"
-	} else if eff.HasPRRequiredEvaluate {
-		report.EffectivePRRequired = "Evaluate"
-	} else {
-		report.EffectivePRRequired = "No"
-	}
-
-	// Effective approvals required (max of active rulesets/classic). If only evaluate, annotate.
-	activeMax := eff.ApprovalsActive
-	classicNum, _ := strconv.Atoi(report.RequiredNumberOfApprovals)
-	if classicPR && classicNum > activeMax {
-		activeMax = classicNum
-	}
-	if report.EffectivePRRequired == "Yes" {
-		report.EffectiveApprovalsRequired = strconv.Itoa(activeMax)
-	} else if report.EffectivePRRequired == "Evaluate" {
-		// show the evaluate-only count
-		if eff.ApprovalsEvaluate > 0 {
-			report.EffectiveApprovalsRequired = fmt.Sprintf("Evaluate %d", eff.ApprovalsEvaluate)
-		} else {
-			report.EffectiveApprovalsRequired = "Evaluate 0"
-		}
-	} else {
-		report.EffectiveApprovalsRequired = "0"
-	}
-
-	// Effective force pushes blocked: prefer Active rulesets; else classic; else Evaluate notation
-	effBlockedActive := eff.ForceBlockedActive
-	effBlockedEval := eff.ForceBlockedEvaluate
-	classicBlocked := !(report.AllowForcePushes == "Yes")
-
-	switch {
-	case effBlockedActive != nil:
-		report.EffectiveForcePushesBlocked = boolToYesNo(*effBlockedActive)
-	case classicPR: // using classic as signal; if no classic but allowForcePushes="No", still true
-		report.EffectiveForcePushesBlocked = boolToYesNo(classicBlocked)
-	case effBlockedEval != nil:
-		if *effBlockedEval {
-			report.EffectiveForcePushesBlocked = "Evaluate"
-		} else {
-			report.EffectiveForcePushesBlocked = "Evaluate"
-		}
-	default:
-		report.EffectiveForcePushesBlocked = "No"
-	}
-}
-
-func classifyProtection(report *BranchProtectionReport) (isProtected, viaClassic, viaRuleset, viaBoth, isEvaluateOnly bool) {
-	if report == nil {
-		return false, false, false, false, false
-	}
-	// Protected if Effective PR Required is Yes
-	if strings.EqualFold(report.EffectivePRRequired, "Yes") {
-		isProtected = true
-	}
-	switch report.ProtectionSource {
-	case "Both":
-		viaBoth = isProtected
-	case "Classic Branch Protection":
-		viaClassic = isProtected
-	case "Ruleset":
-		viaRuleset = isProtected
-	}
-	if !isProtected && strings.EqualFold(report.EffectivePRRequired, "Evaluate") {
-		isEvaluateOnly = true
-	}
-	return
-}
-
-// -------- Ruleset fetch + compute --------
-
-func fetchRepoRulesets(ctx context.Context, client *github.Client, org, repo string, rl *RateLimitHandler, logger *Logger) ([]ruleset, bool, error) {
-	// GET /repos/{owner}/{repo}/rulesets?includes_parents=true
-	u := &url.URL{
-		Path: path.Join("repos", org, repo, "rulesets"),
-	}
-	q := u.Query()
-	q.Set("includes_parents", "true")
-	u.RawQuery = q.Encode()
-
-	req, err := client.NewRequest("GET", u.String(), nil)
-	if err != nil {
-		return nil, false, err
-	}
-	// Accept header for rulesets API (modern REST)
-	req.Header.Set("Accept", "application/vnd.github+json")
-	var rs []ruleset
-	resp, err := client.Do(ctx, req, &rs)
-	rl.HandleRateLimit(resp, logger)
-	if err != nil {
-		// 403 typical when app lacks ruleset read
-		if resp != nil && (resp.StatusCode == 403 || resp.StatusCode == 404) {
-			return nil, true, fmt.Errorf("rulesets API inaccessible: %w", err)
-		}
-		return nil, false, err
-	}
-	return rs, false, nil
-}
-
-func computeEffectiveFromRulesets(rs []ruleset, defaultBranch string) effectiveRules {
-	var eff effectiveRules
-	eff.EnforcementLabel = "None"
-	activeFound := false
-	evaluateFound := false
-
-	for _, r := range rs {
-		if !rulesetTargetsBranch(r, defaultBranch) {
-			continue
-		}
-		enf := normalizeEnforcementLabel(r.Enforcement)
-		switch enf {
-		case "Active":
-			activeFound = true
-			eff.EnforcementLabel = "Active"
-			eff.Names = append(eff.Names, r.Name)
-			applyRuleAggregate(&eff, r, true)
-		case "Evaluate":
-			if !activeFound { // don't downgrade overall label if active already found
-				eff.EnforcementLabel = "Evaluate"
-			}
-			evaluateFound = true
-			eff.Names = append(eff.Names, r.Name)
-			applyRuleAggregate(&eff, r, false)
-		case "Disabled":
-			// Ignore for effectiveness, but name not added to keep output tight.
-		default:
-			// none/unknown
-		}
-	}
-
-	// If nothing was found, label stays "None"
-	_ = evaluateFound
-	return eff
-}
-
-func normalizeEnforcementLabel(v string) string {
-	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "active":
-		return "Active"
-	case "evaluate":
-		return "Evaluate"
-	case "disabled":
-		return "Disabled"
-	case "none", "":
-		return "None"
-	default:
-		return strings.Title(strings.ToLower(v))
-	}
-}
-
-func rulesetTargetsBranch(r ruleset, branch string) bool {
-	// Prefer conditions.ref_name include/exclude if present
-	if r.Conditions != nil && r.Conditions.RefName != nil {
-		incl := r.Conditions.RefName.Include
-		excl := r.Conditions.RefName.Exclude
-		// If include is present, one must match
-		if len(incl) > 0 {
-			match := false
-			for _, patt := range incl {
-				if globMatch(patt, branch) {
-					match = true
-					break
-				}
-			}
-			if !match {
-				return false
-			}
-		}
-		// If any exclude matches, it's out
-		for _, patt := range excl {
-			if globMatch(patt, branch) {
-				return false
-			}
-		}
-		return true
-	}
-	// Fallback: any target patterns
-	if len(r.Targets) > 0 {
-		for _, t := range r.Targets {
-			if t.Pattern != "" && globMatch(t.Pattern, branch) {
-				return true
-			}
-		}
-	}
-	// If no conditions/targets defined, treat as not targeting this branch
-	return false
-}
-
-func globMatch(pattern, s string) bool {
-	pattern = strings.TrimSpace(pattern)
-	if pattern == "" {
-		return false
-	}
-	// Support simple ** by replacing with *
-	p := strings.ReplaceAll(pattern, "**", "*")
-	ok, err := path.Match(p, s)
-	if err != nil {
-		// On malformed pattern, do strict equality as safe fallback
-		return strings.EqualFold(pattern, s)
-	}
-	return ok
-}
-
-func applyRuleAggregate(e *effectiveRules, rs ruleset, active bool) {
-	// Iterate rules and aggregate strictest
-	for _, rule := range rs.Rules {
-		t := strings.ToLower(rule.Type)
-		switch t {
-		case "pull_request":
-			if active {
-				e.HasPRRequiredActive = true
-			} else {
-				e.HasPRRequiredEvaluate = true
-			}
-		case "required_status_checks":
-			// informational for now; not changing protected classification
-		case "non_fast_forward", "block_force_pushes":
-			val := true // presence means block force pushes
-			if active {
-				e.ForceBlockedActive = &val
-			} else {
-				e.ForceBlockedEvaluate = &val
-			}
-		case "signed_commits":
-			// informational; not changing protected classification
-		case "approvals", "required_pull_request_reviews":
-			// approvals count could be in parameters["min_approvals"] or ["required_approvals"]
-			minA := extractIntParam(rule.Parameters, []string{"min_approvals", "required_approvals"})
-			if active {
-				if minA > e.ApprovalsActive {
-					e.ApprovalsActive = minA
-				}
-			} else {
-				if minA > e.ApprovalsEvaluate {
-					e.ApprovalsEvaluate = minA
-				}
-			}
-		default:
-			// ignore other rule types for now
-		}
-	}
-}
-
-func extractIntParam(params map[string]interface{}, keys []string) int {
-	for _, k := range keys {
-		if v, ok := params[k]; ok {
-			switch t := v.(type) {
-			case float64:
-				return int(t)
-			case int:
-				return t
-			case json.Number:
-				i, _ := t.Int64()
-				return int(i)
-			case string:
-				i, _ := strconv.Atoi(t)
-				return i
-			}
-		}
-	}
-	return 0
-}
-
-// -------- Helpers / formatting --------
 
 func reportToSlice(r *BranchProtectionReport) []string {
 	return []string{
@@ -1219,12 +759,6 @@ func reportToSlice(r *BranchProtectionReport) []string {
 		r.RestrictPushes, r.UserPushRestrictions, r.TeamPushRestrictions,
 		r.AllowForcePushes, r.AllowDeletions,
 		r.LastActivity,
-		r.ProtectionSource,
-		r.RulesetEnforcement,
-		r.RulesetNames,
-		r.EffectivePRRequired,
-		r.EffectiveApprovalsRequired,
-		r.EffectiveForcePushesBlocked,
 	}
 }
 
