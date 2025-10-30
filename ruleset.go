@@ -78,13 +78,13 @@ func fetchRepoRulesets(ctx context.Context, client *github.Client, org, repo str
 	return rs, false, nil
 }
 
-func computeEffectiveFromRulesets(rs []ruleset, defaultBranch string) effectiveRules {
+func computeEffectiveFromRulesets(rs []ruleset, defaultBranch string, logger *Logger) effectiveRules {
 	var eff effectiveRules
 	eff.EnforcementLabel = "None"
 	activeFound := false
 
 	for _, r := range rs {
-		if !rulesetTargetsBranch(r, defaultBranch) {
+		if !rulesetTargetsBranch(r, defaultBranch, logger) {
 			continue
 		}
 		enf := normalizeEnforcementLabel(r.Enforcement)
@@ -125,7 +125,7 @@ func normalizeEnforcementLabel(v string) string {
 	}
 }
 
-func rulesetTargetsBranch(r ruleset, branch string) bool {
+func rulesetTargetsBranch(r ruleset, branch string, logger *Logger) bool {
 	if r.Conditions != nil && r.Conditions.RefName != nil {
 		incl := r.Conditions.RefName.Include
 		excl := r.Conditions.RefName.Exclude
