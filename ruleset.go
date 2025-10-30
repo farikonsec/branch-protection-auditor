@@ -85,6 +85,10 @@ func computeEffectiveFromRulesets(rs []ruleset, defaultBranch string, logger *Lo
 
 	for _, r := range rs {
 		if !rulesetTargetsBranch(r, defaultBranch, logger) {
+			logger.Info("Ruleset skipped due to branch targeting", map[string]interface{}{
+				"ruleset": r.Name,
+				"branch":  defaultBranch,
+			})
 			continue
 		}
 		enf := normalizeEnforcementLabel(r.Enforcement)
