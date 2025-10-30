@@ -71,6 +71,10 @@ func fetchRepoRulesets(ctx context.Context, client *github.Client, org, repo str
 		}
 		return nil, false, err
 	}
+	logger.Info("Fetched rulesets", map[string]interface{}{
+		"repo":  repo,
+		"count": len(rs),
+	})
 	return rs, false, nil
 }
 
@@ -134,11 +138,21 @@ func rulesetTargetsBranch(r ruleset, branch string) bool {
 				}
 			}
 			if !match {
+				logger.Info("Skipping ruleset (no include match)", map[string]interface{}{
+					"ruleset": r.Name,
+					"branch":  branch,
+					"include": incl,
+				})
 				return false
 			}
 		}
 		for _, patt := range excl {
 			if globMatch(patt, branch) {
+				logger.Info("Skipping ruleset (excluded)", map[string]interface{}{
+					"ruleset": r.Name,
+					"branch":  branch,
+					"exclude": excl,
+				})
 				return false
 			}
 		}
