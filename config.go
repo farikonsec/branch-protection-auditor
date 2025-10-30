@@ -21,7 +21,7 @@ func loadConfig() (*AppConfig, error) {
 		Org:            os.Getenv("GITHUB_ORG"),
 	}
 	if cfg.Org == "" {
-		cfg.Org = "nanasec"
+		cfg.Org = "nanasec2"
 	}
 	if cfg.AppID == "" || cfg.InstallationID == "" || cfg.PrivateKey == "" {
 		return nil, fmt.Errorf("missing APP_ID, INSTALLATION_ID, or PRIVATE_KEY environment variables")
