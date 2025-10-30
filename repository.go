@@ -237,7 +237,7 @@ func mergeRulesetsIntoReport(ctx context.Context, client *github.Client, org str
 		}
 	}
 
-	eff := computeEffectiveFromRulesets(rs, defaultBranch)
+	eff := computeEffectiveFromRulesets(rs, defaultBranch, logger)
 	report.RulesetNames = strings.Join(eff.Names, ", ")
 
 	if eff.EnforcementLabel != "" {
