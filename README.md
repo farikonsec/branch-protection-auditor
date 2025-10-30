@@ -1,132 +1,51 @@
-# Github Organization Branch Protection Auditor
+# GitHub Branch Protection Auditor
 
-This project automates the audit of **branch protection settings** across all repositories in a GitHub organization. It helps ensure security policies like mandatory pull request reviews, status checks, and signed commits are enforced consistently.
+This tool scans every repository in a GitHub organization, reads branch protection and ruleset settings on the default branch, and writes the results to an Excel workbook (`branch_protection_report.xlsx`) with summaries for all repos and engineering-owned repos.
 
----
+## How It Works
 
-## 📌 What It Does
+1. `main.go` loads GitHub App credentials from the environment and starts the audit.
+2. `github_client.go` exchanges the app credentials for an installation token.
+3. `audit.go` lists every repository, collects protection data concurrently, and writes both the console summary and Excel workbook.
+4. `repository.go` and `ruleset.go` pull classic protections and rulesets, merging them into a single report entry.
+5. `stats.go` tracks shared counters and progress while the run executes.
 
-- Uses a GitHub App for secure, scoped authentication.
-- Scans all repositories in a GitHub organization.
-- Checks branch protection settings on default branches.
-- Outputs findings to a CSV file.
-- Uploads the CSV as a GitHub Actions artifact for easy download.
+## Key Files
 
----
+- `main.go` – entrypoint that wires configuration, logging, and the audit run.
+- `config.go` – loads `APP_ID`, `INSTALLATION_ID`, `PRIVATE_KEY`, and optional `GITHUB_ORG` (defaults to `nanasec`).
+- `github_client.go` – builds an authenticated GitHub client using the GitHub App.
+- `audit.go` – orchestrates repository discovery, Excel output, and engineering-team reporting.
+- `repository.go` – converts branch protection API responses into the report structure.
+- `ruleset.go` – fetches rulesets and computes their effective protection impact.
+- `stats.go` – shared counters, timers, and progress formatting.
+- `logger.go` / `ratelimit.go` – structured logger and rate-limit helper.
+- `auth.go` – JWT creation and helper utilities for GitHub App auth.
+- `main_old_working.go` – archived legacy script (excluded by default build tags).
+- `.github/workflows/audit.yml` – GitHub Actions workflow wrapper (optional automation).
 
-## ⚙️ How It Works
+## Prerequisites
 
-1. The Go script (`main.go`) authenticates using a GitHub App and lists repos in the org.
-2. For each repo, it checks the default branch’s protection configuration.
-3. Results are saved to `branch_protection_report.csv`.
-4. A GitHub Actions workflow runs the script and uploads the report as an artifact.
-
----
-
-## 🔐 Why a GitHub App?
-
-- Provides secure, minimal permissions.
-- Supports org-wide auditing without personal tokens.
-- Limits the blast radius of credentials.
-
----
-
-## 🚀 Prerequisites
-
-✅ A GitHub organization (e.g., `nanasec`)  
-✅ Admin access in the organization  
-✅ A GitHub App with:
-  - Repository administration (read-only)
-  - Metadata (read-only, default)
-  - Installed **on the organization**  
-✅ A repo to run this audit, with GitHub Actions enabled  
-✅ Three secrets created in the repo’s **Settings → Secrets → Actions**:
+- Go 1.24+
+- GitHub App installed on the target organization with read-only Repository Administration and Metadata permissions
+- Environment variables set:
   - `APP_ID`
   - `INSTALLATION_ID`
-  - `PRIVATE_KEY` (your GitHub App private key)
+  - `PRIVATE_KEY`
+  - `GITHUB_ORG`
 
----
+## Running Locally
 
-## 📥 Setup Instructions
+```bash
+export APP_ID=...
+export INSTALLATION_ID=...
+export PRIVATE_KEY="$(cat private-key.pem)"
+export GITHUB_ORG=your-org
+go run ./...
+```
 
-### 1️⃣ Create and Install the GitHub App
+The Excel file and console summaries are produced in the working directory.
 
-- Create a GitHub App with permissions:
-  - Repository administration → Read-only
-  - Metadata → Read-only (default)
-- Install the app on your organization, either on all or selected repositories.
-- After install, GitHub redirects to:
-  https://github.com/organizations/YOUR_ORG/settings/installations/INSTALLATION_ID
+## Running in GitHub Actions
 
-**  Copy the `INSTALLATION_ID` from this URL.**
-
-### 2️⃣ Store App Credentials in Repo Secrets
-
-In your repo where the audit runs:
-- Go to **Settings → Secrets → Actions**.
-- Add:
-- `APP_ID`: App ID from your app settings.
-- `INSTALLATION_ID`: the installation ID you copied.
-- `PRIVATE_KEY`: your GitHub App private key as a multiline secret.
-
----
-
-## 📂 Folder Structure
-
-├── main.go                  # Go script for auditing
-└── .github
-└── workflows
-└── branch-protection-audit.yml  # Workflow to run the audit
-
-
----
-
-## ▶️ How to Run the Audit
-
-1. Navigate to your repo on GitHub.
-2. Open the **Actions** tab.
-3. Select the `Branch Protection Audit` workflow.
-4. Click **Run workflow** → confirm → **Run workflow**.
-5. After it completes, download the `branch-protection-report.csv` artifact from the workflow summary.
-
----
-
-## 📝 What You’ll Get
-
-The audit produces `branch_protection_report.csv` listing, for each repo:
-- Repository name
-- Require PR before merge
-- Required number of approvals
-- Status checks configuration
-- Enforce admins, signed commits, conversation resolution, force pushes, deletions, etc.
-
----
-
-## 🔒 App Permissions
-
-- Repository Administration: Read-only
-- Metadata: Read-only (default)
-
----
-
-## ✅ Best Practices
-
-- Periodically rotate the App’s private key.
-- Regularly review and prune App permissions.
-- Archive CSV reports in secure long-term storage for compliance.
-- Extend this script to open issues on non-compliant repos or feed data into dashboards.
-
----
-
-## 📈 Enhancements to Consider
-
-- Integrate with Slack or email for compliance alerts.
-- Fail the workflow on non-compliance to enforce policies.
-- Store reports in S3 and visualize trends over time with Grafana.
-- Add thresholds or policy-as-code enforcement.
-
----
-
-## 🙋 Need Help?
-
-Open an issue in this repo or contact me.
+Store the three secrets above as repository or organization secrets and use `.github/workflows/audit.yml` to run the auditor on demand. The workflow uploads the generated workbook as an artifact.

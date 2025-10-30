@@ -1,3 +1,7 @@
+//go:build archive
+// +build archive
+
+// this is older version that only checks legacy protection. it works. just keep for archive.
 package main
 
 import (
