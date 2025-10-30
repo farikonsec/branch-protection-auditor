@@ -26,7 +26,7 @@ This tool scans every repository in a GitHub organization, reads branch protecti
 
 ## Prerequisites
 
-- Go 1.24+
+- Go 1.21+
 - GitHub App installed on the target organization with read-only Repository Administration and Metadata permissions
 - Environment variables set:
   - `APP_ID`
@@ -48,4 +48,4 @@ The Excel file and console summaries are produced in the working directory.
 
 ## Running in GitHub Actions
 
-Store the three secrets above as repository or organization secrets and use `.github/workflows/audit.yml` to run the auditor on demand. The workflow uploads the generated workbook as an artifact.
+Store the three secrets above as repository or organization secrets and use `.github/workflows/audit.yml` to run the auditor on demand. The workflow runs `go run ./...` and uploads the generated workbook as an artifact.

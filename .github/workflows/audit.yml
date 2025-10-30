@@ -18,7 +18,7 @@ jobs:
         APP_ID: ${{ secrets.GH_APP_ID }}
         INSTALLATION_ID: ${{ secrets.GH_INSTALLATION_ID }}
         PRIVATE_KEY: ${{ secrets.GH_PRIVATE_KEY }}
-      run: go run main.go
+      run: go run ./...
     - name: Upload branch protection report
       uses: actions/upload-artifact@v4
       with:
