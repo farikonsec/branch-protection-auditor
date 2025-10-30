@@ -16,7 +16,7 @@ import (
 type ruleset struct {
 	Name         string             `json:"name"`
 	Enforcement  string             `json:"enforcement"`
-	Targets      []rulesetTarget    `json:"target,omitempty"`
+	Targets      json.RawMessage    `json:"target,omitempty"`
 	BypassActors []json.RawMessage  `json:"bypass_actors,omitempty"`
 	Rules        []rulesetRule      `json:"rules"`
 	Conditions   *rulesetConditions `json:"conditions,omitempty"`
@@ -27,10 +27,6 @@ type rulesetConditions struct {
 		Include []string `json:"include"`
 		Exclude []string `json:"exclude"`
 	} `json:"ref_name,omitempty"`
-}
-
-type rulesetTarget struct {
-	Pattern string `json:"pattern,omitempty"`
 }
 
 type rulesetRule struct {
