@@ -134,11 +134,11 @@ func normalizeEnforcementLabel(v string) string {
 
 func rulesetTargetsBranch(r ruleset, branch string, logger *Logger) bool {
 	if r.Conditions == nil || r.Conditions.RefName == nil {
-		logger.Info("Ruleset has no ref_name conditions; assuming not targeted", map[string]interface{}{
+		logger.Info("Ruleset has no ref_name conditions; assuming applies to default branch", map[string]interface{}{
 			"ruleset": r.Name,
 			"branch":  branch,
 		})
-		return false
+		return true
 	}
 
 	includes := r.Conditions.RefName.Include
