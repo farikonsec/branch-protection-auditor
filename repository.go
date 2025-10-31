@@ -315,11 +315,11 @@ func classifyProtection(report *BranchProtectionReport) (isProtected, viaClassic
 	}
 	switch report.ProtectionSource {
 	case "Both":
-		viaBoth = isProtected
+		viaBoth = true
 	case "Classic Branch Protection":
-		viaClassic = isProtected
+		viaClassic = true
 	case "Ruleset":
-		viaRuleset = isProtected
+		viaRuleset = true
 	}
 	if !isProtected && strings.EqualFold(report.EffectivePRRequired, "Evaluate") {
 		isEvaluateOnly = true
