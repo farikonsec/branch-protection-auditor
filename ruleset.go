@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -129,54 +130,100 @@ func normalizeEnforcementLabel(v string) string {
 	}
 }
 
+// --- ✅ ROBUST BRANCH TARGET MATCHING LOGIC BELOW ---
+
 func rulesetTargetsBranch(r ruleset, branch string, logger *Logger) bool {
-	if r.Conditions != nil && r.Conditions.RefName != nil {
-		incl := r.Conditions.RefName.Include
-		excl := r.Conditions.RefName.Exclude
-		if len(incl) > 0 {
-			match := false
-			for _, patt := range incl {
-				if globMatch(patt, branch) {
-					match = true
-					break
-				}
-			}
-			if !match {
-				logger.Info("Skipping ruleset (no include match)", map[string]interface{}{
-					"ruleset": r.Name,
-					"branch":  branch,
-					"include": incl,
-				})
-				return false
-			}
-		}
-		for _, patt := range excl {
-			if globMatch(patt, branch) {
-				logger.Info("Skipping ruleset (excluded)", map[string]interface{}{
-					"ruleset": r.Name,
-					"branch":  branch,
-					"exclude": excl,
-				})
-				return false
-			}
-		}
-		return true
+	if r.Conditions == nil || r.Conditions.RefName == nil {
+		logger.Info("Ruleset has no ref_name conditions; assuming not targeted", map[string]interface{}{
+			"ruleset": r.Name,
+			"branch":  branch,
+		})
+		return false
 	}
-	return false
+
+	includes := r.Conditions.RefName.Include
+	excludes := r.Conditions.RefName.Exclude
+
+	if len(includes) == 0 && len(excludes) == 0 {
+		logger.Info("Ruleset has empty include/exclude; assuming not targeted", map[string]interface{}{
+			"ruleset": r.Name,
+			"branch":  branch,
+		})
+		return false
+	}
+
+	matched := false
+	for _, inc := range includes {
+		if robustGlobMatch(inc, branch) {
+			matched = true
+			break
+		}
+	}
+
+	if !matched {
+		logger.Info("Ruleset did not match include patterns", map[string]interface{}{
+			"ruleset": r.Name,
+			"branch":  branch,
+			"include": includes,
+		})
+		return false
+	}
+
+	for _, exc := range excludes {
+		if robustGlobMatch(exc, branch) {
+			logger.Info("Ruleset excluded branch", map[string]interface{}{
+				"ruleset": r.Name,
+				"branch":  branch,
+				"exclude": excludes,
+			})
+			return false
+		}
+	}
+
+	logger.Info("Ruleset matched branch successfully", map[string]interface{}{
+		"ruleset": r.Name,
+		"branch":  branch,
+		"include": includes,
+		"exclude": excludes,
+	})
+	return true
 }
 
-func globMatch(pattern, s string) bool {
+// --- ✅ ROBUST GLOB MATCH FUNCTION ---
+
+func robustGlobMatch(pattern, value string) bool {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "" {
 		return false
 	}
-	p := strings.ReplaceAll(pattern, "**", "*")
-	ok, err := path.Match(p, s)
-	if err != nil {
-		return strings.EqualFold(pattern, s)
+
+	// GitHub’s patterns use "**" and "*" for wildcards
+	pattern = strings.ReplaceAll(pattern, "**", "*")
+
+	// Special case: "*" means match everything
+	if pattern == "*" {
+		return true
 	}
-	return ok
+
+	// Exact match (case-insensitive)
+	if strings.EqualFold(pattern, value) {
+		return true
+	}
+
+	// Convert pattern to a regular expression
+	rePattern := regexp.QuoteMeta(pattern)
+	rePattern = strings.ReplaceAll(rePattern, "\\*", ".*")
+	rePattern = "^" + rePattern + "$"
+
+	re, err := regexp.Compile("(?i)" + rePattern) // case-insensitive
+	if err != nil {
+		// fallback: simple equality check
+		return strings.EqualFold(pattern, value)
+	}
+	return re.MatchString(value)
 }
+
+// --- END OF ROBUST MATCHER ---
 
 func applyRuleAggregate(e *effectiveRules, rs ruleset, active bool) {
 	for _, rule := range rs.Rules {
